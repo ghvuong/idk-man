@@ -169,6 +169,8 @@ export function closeEditor(keep = true) {
 
 // ---------- inspector ----------
 
+const fmtPos = (v) => String(v).replace('.', document.documentElement.lang === 'vi' ? ',' : '.');
+
 const HEADS = [['to', '→'], ['epi', '↠'], ['harpoon', '⇀'], ["harpoon'", '⇁'], ['none', '—']];
 const TAILS = [['none', '–'], ['hook', '↪'], ["hook'", '<span class="flip">↪</span>'], ['mono', '↣'], ['mapsto', '↦']];
 const BODIES = [['solid', '—'], ['dashed', '⇢'], ['dotted', '⋯'], ['squiggly', '⇝']];
@@ -178,6 +180,23 @@ const TITLES = {
   tail: { none: '—', hook: 'hook', "hook'": "hook'", mono: 'tail', mapsto: 'maps to' },
   body: { solid: '—', dashed: 'dashed', dotted: 'dotted', squiggly: 'squiggly' },
 };
+
+// One "curvature" slider: up to 90° it is the bend angle; beyond, the bend stays at 90° and
+// the looseness grows (180 ↔ looseness 3).
+function curvatureOf(e) {
+  const a = Math.abs(e.bend);
+  return Math.sign(e.bend) * (a + (a >= 90 ? (e.looseness - 1) * 45 : 0));
+}
+
+function fromCurvature(v) {
+  const a = Math.abs(v);
+  if (a <= 90) return { bend: v, looseness: 1 };
+  return { bend: Math.sign(v) * 90, looseness: Math.round((1 + (a - 90) / 45) * 10) / 10 };
+}
+
+function curvatureText(e) {
+  return e.looseness !== 1 ? `${e.bend}° ×${e.looseness}` : `${e.bend}°`;
+}
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -206,7 +225,7 @@ export function renderInspector() {
       <div class="btn-row"><button class="btn danger" data-act="delete">${esc(t('act.delete'))}</button></div>`;
   } else if (single.kind === 'node') {
     const n = d.node(single.id);
-    el.innerHTML = `<h2>${esc(t('insp.node'))} <span class="cellref">· ${esc(t('insp.cell', { r: n.row, c: n.col }))}</span></h2>
+    el.innerHTML = `<h2>${esc(t('insp.node'))} <span class="cellref">· ${esc(t('insp.cell', { r: fmtPos(n.row), c: fmtPos(n.col) }))}</span></h2>
       <div class="field"><label for="insp-label">${esc(t('insp.label'))}</label>
         <input type="text" id="insp-label" value="${esc(n.label)}" placeholder="${esc(t('insp.label.ph'))}" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
       <div class="btn-row"><button class="btn" data-act="corner">${esc(t('insp.corner'))}</button>
@@ -229,7 +248,7 @@ export function renderInspector() {
         <div class="row">${seg('body', BODIES, e.body)}${seg('double', [['true', '⇒', t('insp.double')]], String(e.double))}</div></div>
       ${isLoop ? `<div class="field"><span class="field-name">${esc(t('insp.loop'))}</span>${seg('loop', LOOPS, e.loop)}</div>` : `
       <div class="field"><label for="insp-bend">${esc(t('insp.bend'))}</label>
-        <div class="row"><input type="range" id="insp-bend" min="-90" max="90" step="5" value="${e.bend}"><output id="insp-bend-out">${e.bend}°</output></div></div>
+        <div class="row"><input type="range" id="insp-bend" min="-180" max="180" step="5" value="${curvatureOf(e)}"><output id="insp-bend-out">${curvatureText(e)}</output></div></div>
       <div class="field"><span class="field-name">${esc(t('insp.shift'))}</span>${seg('shift', shiftOpts, e.shift === null ? 'auto' : e.shift, 'text')}</div>`}` : ''}
       ${!isLoop ? `<div class="field"><span class="field-name">${esc(t('insp.kind'))}</span>
         ${seg('kind', [['arrow', esc(t('kind.arrow'))], ['phantom', esc(t('kind.phantom'))], ['corner', esc(t('kind.corner'))]], e.kind, 'text')}</div>` : ''}
@@ -265,8 +284,8 @@ export function initInspector() {
     } else if (ev.target.id === 'insp-bend') {
       const e = app.diagram.edge(single.id);
       if (labelBefore === null) labelBefore = app.diagram.snapshot();
-      mutateQuietly(() => { e.bend = Number(ev.target.value); if (e.bend) e.shift = null; });
-      $('insp-bend-out').textContent = `${e.bend}°`;
+      mutateQuietly(() => { Object.assign(e, fromCurvature(Number(ev.target.value))); if (e.bend) e.shift = null; });
+      $('insp-bend-out').textContent = curvatureText(e);
     }
   });
   el.addEventListener('change', (ev) => {
@@ -312,7 +331,7 @@ export function initInspector() {
           // A corner mark points diagonally; make sure it does.
           const a = d.node(e.from), b = d.node(e.to);
           const dc = Math.sign(b.col - a.col) || 1, dr = Math.sign(b.row - a.row) || 1;
-          const target = d.nodeAt(a.col + dc, a.row + dr) || d.addNode(a.col + dc, a.row + dr, '');
+          const target = d.nodeNear(a.col + dc, a.row + dr, 0.75) || d.addNode(a.col + dc, a.row + dr, '');
           e.to = target.id;
         }
       } else e[name] = v;
@@ -335,7 +354,7 @@ function addCornerFor(nodeId) {
   }
   let id;
   commit((dd) => {
-    const target = dd.nodeAt(n.col + sx, n.row + sy) || dd.addNode(n.col + sx, n.row + sy, '');
+    const target = dd.nodeNear(n.col + sx, n.row + sy, 0.75) || dd.addNode(n.col + sx, n.row + sy, '');
     const existing = dd.edges.find((e) => e.kind === 'corner' && e.from === nodeId);
     if (existing) { existing.to = target.id; id = existing.id; } else id = dd.addEdge(nodeId, target.id, { kind: 'corner' }).id;
   });
@@ -445,8 +464,8 @@ export function openHelp() {
   const lang = document.documentElement.lang === 'en' ? 'en' : 'vi';
   const rows = HELP.map(([svg, text]) => `<dt><svg viewBox="0 0 88 44" aria-hidden="true">${svg}</svg></dt><dd>${text[lang]}</dd>`).join('');
   const keys = lang === 'vi'
-    ? '<kbd>Enter</kbd> sửa nhãn · gõ phím bất kỳ khi đang chọn để đặt nhãn · <kbd>Delete</kbd> xóa · <kbd>Ctrl</kbd>+<kbd>Z</kbd> hoàn tác · phím mũi tên di chuyển · giữ <kbd>Space</kbd> rồi kéo để cuộn · <kbd>Ctrl</kbd>+cuộn chuột hoặc hai ngón để thu phóng.'
-    : '<kbd>Enter</kbd> edits the label · start typing with something selected to label it · <kbd>Delete</kbd> deletes · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes · arrow keys move · hold <kbd>Space</kbd> and drag to pan · <kbd>Ctrl</kbd>+wheel or two fingers to zoom.';
+    ? '<kbd>Enter</kbd> sửa nhãn · gõ phím bất kỳ khi đang chọn để đặt nhãn · <kbd>Delete</kbd> xóa · <kbd>Ctrl</kbd>+<kbd>Z</kbd> hoàn tác · phím mũi tên dời một ô, thêm <kbd>Shift</kbd> để dời ¼ ô · giữ <kbd>Space</kbd> rồi kéo để cuộn · <kbd>Ctrl</kbd>+cuộn chuột hoặc hai ngón để thu phóng. Kéo đối tượng thì bước dời theo mức phóng to: càng phóng to càng dời được ít (đến ¼ ô); các chấm mờ là chỗ có thể đặt.'
+    : '<kbd>Enter</kbd> edits the label · start typing with something selected to label it · <kbd>Delete</kbd> deletes · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes · arrow keys move by a cell, with <kbd>Shift</kbd> by a quarter · hold <kbd>Space</kbd> and drag to pan · <kbd>Ctrl</kbd>+wheel or two fingers to zoom. Dragged objects move in steps that shrink as you zoom in (down to a quarter cell); the faint dots show where they can land.';
   $('help-body').innerHTML = `<h2 id="help-title">${esc(t('help.title'))}</h2><dl class="help-list">${rows}</dl><p class="help-keys">${keys}</p>`;
   $('help-dialog').showModal();
 }

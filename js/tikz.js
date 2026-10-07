@@ -1,6 +1,6 @@
 // tikz-cd export and import.
 
-import { Diagram, EDGE_DEFAULTS } from './model.js';
+import { Diagram, EDGE_DEFAULTS, GRID_PITCH, snapQ } from './model.js';
 
 // ---------- export ----------
 
@@ -16,10 +16,12 @@ export function quoteLabel(label) {
 
 function cellLabel(label) {
   const t = label.trim();
-  return t.includes('&') ? `{${t}}` : t;
+  // "[" right after \\ would be read as a row-spacing argument.
+  return t.includes('&') || t.startsWith('[') ? `{${t}}` : t;
 }
 
 const fmt = (n) => String(Math.round(n * 100) / 100);
+const em = (x) => `${Math.round(x * 10) / 10}em`;
 
 function mod360(a) {
   return ((Math.round(a) % 360) + 360) % 360;
@@ -67,6 +69,7 @@ export function arrowOptions(e, from, to, shift) {
     const side = e.bend > 0 ? 'left' : 'right';
     const a = Math.abs(e.bend);
     opts.push(a === 30 ? `bend ${side}` : `bend ${side}=${a}`);
+    if (e.looseness !== 1) opts.push(`looseness=${fmt(e.looseness)}`);
   }
   if (shift) {
     const side = shift > 0 ? 'left' : 'right';
@@ -91,48 +94,45 @@ export function toTikzCD(input, { indent = '  ' } = {}) {
   const d = input instanceof Diagram ? input : new Diagram(input);
   if (!d.nodes.length) return '\\begin{tikzcd}\n\\end{tikzcd}';
   const shifts = d.shifts();
+  const gr = d.grid();
+  const at = (n) => ({ col: gr.col.index.get(n.col), row: gr.row.index.get(n.row) });
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
 
-  // Cells that must exist: every object plus the targets of corner marks.
-  const need = [];
-  for (const n of d.nodes) need.push({ col: n.col, row: n.row });
-  for (const e of d.edges) {
-    if (e.kind === 'corner') {
-      const t = byId.get(e.to);
-      if (t) need.push({ col: t.col, row: t.row });
-    }
-  }
-  const c0 = Math.min(...need.map((c) => c.col));
-  const r0 = Math.min(...need.map((c) => c.row));
-  const r1 = Math.max(...need.map((c) => c.row));
-
   const content = new Map(); // "row,col" → text
-  const key = (col, row) => `${row},${col}`;
-  for (const n of d.nodes) content.set(key(n.col, n.row), cellLabel(n.label));
+  const key = (p) => `${p.row},${p.col}`;
+  for (const n of d.nodes) content.set(key(at(n)), cellLabel(n.label));
   for (const e of d.edges) {
     const from = byId.get(e.from), to = byId.get(e.to);
     if (!from || !to) continue;
-    const k = key(from.col, from.row);
-    const arrow = `\\arrow[${arrowOptions(e, from, to, shifts.get(e.id) || 0).join(', ')}]`;
+    const k = key(at(from));
+    const arrow = `\\arrow[${arrowOptions(e, at(from), at(to), shifts.get(e.id) || 0).join(', ')}]`;
     const prev = content.get(k) || '';
     content.set(k, prev ? `${prev} ${arrow}` : arrow);
   }
-  // An empty cell that is the end of an arrow needs "{}" so tikz-cd creates its node.
-  for (const c of need) {
-    const k = key(c.col, c.row);
+  // An empty object still needs "{}" so tikz-cd creates its node (arrows may end there).
+  for (const n of d.nodes) {
+    const k = key(at(n));
     if (!content.get(k)) content.set(k, '{}');
   }
 
+  // Column spacing adjustments only count in the first row, so it reaches the last of them.
+  const lastAdjusted = gr.col.adjust.reduce((m, v, i) => (v ? i + 1 : m), 0);
   const lines = [];
-  for (let r = r0; r <= r1; r++) {
-    const cols = need.filter((c) => c.row === r).map((c) => c.col);
-    if (!cols.length) { lines.push(''); continue; }
-    const last = Math.max(...cols);
-    const cells = [];
-    for (let c = c0; c <= last; c++) cells.push(content.get(key(c, r)) || '');
-    lines.push(cells.join(' & ').replace(/^\s+/, '').replace(/\s+&/g, ' &').replace(/^ &/, '&'));
+  for (let r = 0; r < gr.row.count; r++) {
+    let last = Math.max(-1, ...d.nodes.map(at).filter((p) => p.row === r).map((p) => p.col));
+    if (r === 0) last = Math.max(last, lastAdjusted);
+    let line = '';
+    for (let c = 0; c <= last; c++) {
+      if (c > 0) {
+        const adj = r === 0 ? gr.col.adjust[c - 1] : 0;
+        line += adj ? ` &[${em(adj)}] ` : ' & ';
+      }
+      line += content.get(key({ col: c, row: r })) || '';
+    }
+    lines.push(line.replace(/^\s+/, '').replace(/\s+&/g, ' &').replace(/\s+$/, ''));
   }
-  const body = lines.map((l, i) => indent + l + (i < lines.length - 1 ? (l ? ' \\\\' : '\\\\') : '')).join('\n');
+  const rowBreak = (i) => (gr.row.adjust[i] ? `\\\\[${em(gr.row.adjust[i])}]` : '\\\\');
+  const body = lines.map((l, i) => indent + l + (i < lines.length - 1 ? (l ? ' ' : '') + rowBreak(i) : '')).join('\n');
   return `\\begin{tikzcd}\n${body}\n\\end{tikzcd}`;
 }
 
@@ -225,7 +225,7 @@ function parseLabelOption(tok) {
 function parseArrow(optsText, oldArgs) {
   const a = {
     dir: '', from: null, to: null, label: '', side: 'left', extra: [], phantom: false,
-    tail: 'none', head: 'to', body: 'solid', double: false, bend: 0, shift: null, loop: null, labels: [],
+    tail: 'none', head: 'to', body: 'solid', double: false, bend: 0, looseness: 1, shift: null, loop: null, labels: [],
   };
   let loopIn = null, loopOut = null;
   for (let tok of splitTop(optsText, ',', { quotes: true })) {
@@ -253,6 +253,7 @@ function parseArrow(optsText, oldArgs) {
       case 'draw': if (v === 'none') a.phantom = true; else a.extra.push(tok); break;
       case 'equal': case 'equals': case 'Equal': a.double = true; a.head = 'none'; break;
       case 'bend left': a.bend = v ? parseFloat(v) || 30 : 30; break;
+      case 'looseness': a.looseness = parseFloat(v) || 1; break;
       case 'bend right': a.bend = -(v ? parseFloat(v) || 30 : 30); break;
       case 'shift left': case 'shift right': {
         const n = v === null ? 1 : /^-?[\d.]+$/.test(v) ? parseFloat(v) : NaN;
@@ -312,9 +313,11 @@ export function parseTikzCD(src) {
   // xymatrix-style \ar is accepted as \arrow.
   const rows = splitTop(body, '\\\\');
   const cells = []; // {col,row,label,arrows}
+  const rowAdjust = [], colAdjust = []; // spacing tweaks in em: \\[Δ] and &[Δ] (first row only, as in TikZ)
   rows.forEach((rowText, r) => {
-    rowText = rowText.replace(/^\s*\[[^\]]*\]/, ''); // \\[2em]
+    rowText = rowText.replace(/^\s*\[([^\]]*)\]/, (_, dim) => { if (r > 0) rowAdjust[r - 1] = toEm(dim); return ''; });
     splitTop(rowText, '&').forEach((cellText, c) => {
+      if (c > 0) cellText = cellText.replace(/^\[([^\]]*)\]/, (_, dim) => { if (r === 0) colAdjust[c - 1] = toEm(dim); return ''; });
       const arrows = [];
       let label = '';
       let i = 0;
@@ -351,20 +354,22 @@ export function parseTikzCD(src) {
     });
   });
 
-  const d = new Diagram();
-  const nodeAt = (col, row, create) => {
-    let n = d.nodeAt(col, row);
-    if (!n && create) n = d.addNode(col, row, '');
-    return n;
+  // Work in matrix coordinates first, then turn spacing tweaks back into cell positions.
+  const objects = new Map(); // "col,row" → {col,row,label}
+  const object = (col, row) => {
+    const k = `${col},${row}`;
+    if (!objects.has(k)) objects.set(k, { col, row, label: '' });
+    return objects.get(k);
   };
   for (const cell of cells) {
-    if (cell.label) nodeAt(cell.col, cell.row, true).label = cell.label;
-    else if (cell.empty) nodeAt(cell.col, cell.row, true);
+    if (cell.label) object(cell.col, cell.row).label = cell.label;
+    else if (cell.empty) object(cell.col, cell.row);
   }
   const parseRef = (ref) => {
     const m = /^\s*\{?(\d+)\s*-\s*(\d+)\}?\s*$/.exec(ref || '');
     return m ? { row: +m[1] - 1, col: +m[2] - 1 } : null;
   };
+  const arrows = [];
   for (const cell of cells) {
     for (const a of cell.arrows) {
       let src = { col: cell.col, row: cell.row };
@@ -381,24 +386,47 @@ export function parseTikzCD(src) {
         const count = (ch) => (a.dir.match(new RegExp(ch, 'g')) || []).length;
         dst = { col: src.col + count('r') - count('l'), row: src.row + count('d') - count('u') };
       }
-      const from = nodeAt(src.col, src.row, true);
-      const to = nodeAt(dst.col, dst.row, true);
-      const corner = a.phantom && /\\(lr|ul|ll|ur)corner/.test(a.label);
-      const props = {
-        label: corner ? '' : a.label,
-        side: a.side,
-        head: a.head,
-        tail: a.tail,
-        body: a.body,
-        double: a.double,
-        bend: a.bend,
-        shift: a.shift,
-        loop: a.loop ?? EDGE_DEFAULTS.loop,
-        kind: corner ? 'corner' : a.phantom ? 'phantom' : 'arrow',
-        extra: a.extra,
-      };
-      d.addEdge(from.id, to.id, props);
+      arrows.push({ a, from: object(src.col, src.row), to: object(dst.col, dst.row) });
     }
   }
-  return { diagram: d, warnings };
+  const position = (adjust, pitch) => (i) => {
+    let x = 0;
+    for (let k = 0; k < i; k++) x += adjust[k] ? Math.max(0.25, snapQ(1 + adjust[k] / pitch)) : 1;
+    return i < 0 ? i : x;
+  };
+  const px = position(colAdjust, GRID_PITCH.col), py = position(rowAdjust, GRID_PITCH.row);
+  const nodes = [...objects.values()].map((o, i) => {
+    o.id = `n${i + 1}`;
+    return { id: o.id, col: px(o.col), row: py(o.row), label: o.label };
+  });
+  const edges = arrows.map(({ a, from, to }, i) => {
+    const corner = a.phantom && /\\(lr|ul|ll|ur)corner/.test(a.label);
+    return {
+      id: `e${i + 1}`,
+      from: from.id,
+      to: to.id,
+      label: corner ? '' : a.label,
+      side: a.side,
+      head: a.head,
+      tail: a.tail,
+      body: a.body,
+      double: a.double,
+      bend: a.bend,
+      looseness: a.looseness,
+      shift: a.shift,
+      loop: a.loop ?? EDGE_DEFAULTS.loop,
+      kind: corner ? 'corner' : a.phantom ? 'phantom' : 'arrow',
+      extra: a.extra,
+    };
+  });
+  return { diagram: new Diagram({ nodes, edges }), warnings };
+}
+
+// A TeX dimension in em (10pt text: 1em = 10pt, 1ex ≈ 0.43em).
+function toEm(dim) {
+  const m = /^\s*([+-]?[\d.]+)\s*([a-z]*)\s*$/.exec(dim || '');
+  if (!m) return 0;
+  const v = parseFloat(m[1]);
+  const per = { em: 1, ex: 0.43, pt: 0.1, bp: 0.1004, mm: 0.2845, cm: 2.845, in: 7.227, pc: 1.2 }[m[2] || 'em'];
+  return per ? v * per : 0;
 }

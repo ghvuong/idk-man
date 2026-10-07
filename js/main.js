@@ -18,6 +18,7 @@ import { saveFile, svgString, svgToPng, inkToPng } from './io.js';
 import { aiReady, recognizeLabel, recognizeDiagram, errorKind } from './ai.js';
 import { EXAMPLES } from './examples.js';
 import { emptyDiagram } from './model.js';
+import { centroid } from './geom.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -68,9 +69,10 @@ function showReading() {
 async function onHandwriting(p) {
   let target;
   if (p.target.cell) {
-    const { col, row } = p.target.cell;
+    // The object goes where the writing is centred, not where its first stroke began.
+    const { col, row } = C.cellOf(centroid(p.strokes.flat()));
     let id;
-    const existing = app.diagram.nodeAt(col, row);
+    const existing = app.diagram.nodeNear(col, row);
     if (existing && existing.label.trim()) return; // never overwrite a label from stray ink
     if (existing) id = existing.id;
     else commit((d) => { id = d.addNode(col, row, '').id; });
@@ -154,7 +156,7 @@ function placeRecognized(res, origin, removeInk) {
     const minR = Math.min(...res.nodes.map((n) => n.row));
     let ox = origin.col - minC;
     const oy = origin.row - minR;
-    while (res.nodes.some((n) => d.nodeAt(n.col + ox, n.row + oy))) ox++;
+    while (res.nodes.some((n) => d.nodeNear(n.col + ox, n.row + oy))) ox++;
     const ids = new Map();
     for (const n of res.nodes) ids.set(n.key, d.addNode(n.col + ox, n.row + oy, n.label).id);
     for (const e of res.edges) {
@@ -166,7 +168,7 @@ function placeRecognized(res, origin, removeInk) {
     for (const c of res.corners) {
       const a = d.node(ids.get(c.at)), b = d.node(ids.get(c.toward));
       const sx = Math.sign(b.col - a.col) || 1, sy = Math.sign(b.row - a.row) || 1;
-      const target = d.nodeAt(a.col + sx, a.row + sy) || d.addNode(a.col + sx, a.row + sy, '');
+      const target = d.nodeNear(a.col + sx, a.row + sy, 0.75) || d.addNode(a.col + sx, a.row + sy, '');
       d.addEdge(a.id, target.id, { kind: 'corner' });
     }
   });
@@ -179,7 +181,7 @@ async function recognizeSketch() {
   const img = await inkToPng(strokes, { maxSide: 1200, pad: 28, width: 3.2 });
   const pts = strokes.flatMap((s) => s.points);
   const x0 = Math.min(...pts.map((p) => p.x)), y0 = Math.min(...pts.map((p) => p.y));
-  const origin = C.cellOf({ x: x0 + CELL_W * 0.3, y: y0 + CELL_H * 0.3 });
+  const origin = C.regionOf({ x: x0 + CELL_W * 0.3, y: y0 + CELL_H * 0.3 });
   await runRecognition(img.blob, origin, { removeInk: true });
 }
 
@@ -349,8 +351,9 @@ function onKey(e) {
   const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (dirs[key] && app.selection.nodes.size) {
     e.preventDefault();
+    const step = e.shiftKey ? 0.25 : 1; // Shift: fine nudge
     const [dc, dr] = dirs[key];
-    commit((d) => d.moveNodes([...app.selection.nodes], dc, dr));
+    commit((d) => d.moveNodes([...app.selection.nodes], dc * step, dr * step));
     return;
   }
   if (!e.altKey && key.length === 1 && key !== ' ') {

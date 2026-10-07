@@ -98,34 +98,57 @@ export function detectHook(raw, unit) {
   return { side, end: Math.max(0, j - 1) };
 }
 
-// Index of the point farthest from the start: the arrow tip when a head was drawn in-stroke.
-export function tipIndex(raw) {
-  let best = 0, bi = 0;
-  for (let i = 0; i < raw.length; i++) {
-    const d = dist(raw[0], raw[i]);
-    if (d > best) { best = d; bi = i; }
+// An arrowhead drawn at the end of the stroke: a sharp turn near the end after which the
+// pen only travels a little (one barb, or a V). Returns the index of the tip, or -1.
+export function detectDrawnHead(raw, unit) {
+  const total = pathLength(raw);
+  if (total < unit * 0.45) return -1;
+  const pts = resample(raw, Math.max(1.5, unit / 60));
+  const tailBudget = Math.min(total * 0.35, unit * 0.45);
+  const k = 3;
+  let acc = 0;
+  let start = pts.length - 1;
+  while (start > k && acc < tailBudget) { acc += dist(pts[start - 1], pts[start]); start--; }
+  for (let i = Math.max(k, start); i < pts.length - k; i++) {
+    const a = Math.abs(angleBetween(sub(pts[i], pts[i - k]), sub(pts[i + k], pts[i])));
+    if (a > (100 * Math.PI) / 180) {
+      // Map back to the raw stroke by arc length.
+      const s = pathLength(pts.slice(0, i + 1));
+      let l = 0, j = 1;
+      for (; j < raw.length && l < s; j++) l += dist(raw[j - 1], raw[j]);
+      return Math.max(1, j - 1);
+    }
   }
-  return bi;
+  return -1;
 }
 
-// tikz-cd "bend" angle (degrees, + = left) that matches how far the stroke bows out.
-// A tikz bend of θ with looseness 1 bulges by 0.2936·L·sin θ at its middle.
+// tikz "bend" (degrees, + = left) and "looseness" for a curve whose middle is `h` away from
+// a chord of length L. A bend θ with looseness λ bulges by 0.2936·λ·L·sin θ; up to 90° the
+// angle alone matches the drawing, beyond that the looseness grows.
+export function bendFromSagitta(h, L, minRatio = 0.065) {
+  const r = Math.abs(h) / Math.max(L, 1e-9);
+  if (r < minRatio) return { bend: 0, looseness: 1 };
+  const sign = h > 0 ? 1 : -1;
+  if (r <= 0.2936) {
+    const theta = Math.max(5, Math.min(90, Math.round(deg(Math.asin(r / 0.2936)) / 5) * 5));
+    return { bend: sign * theta, looseness: 1 };
+  }
+  return { bend: sign * 90, looseness: Math.min(4, Math.round((r / 0.2936) * 10) / 10) };
+}
+
+// The bend that matches how far a stroke bows out from the line between its ends.
 export function estimateBend(pts) {
-  if (pts.length < 3) return 0;
+  if (pts.length < 3) return { bend: 0, looseness: 1 };
   const a = pts[0], b = pts[pts.length - 1];
   const L = dist(a, b);
-  if (L < 1) return 0;
+  if (L < 1) return { bend: 0, looseness: 1 };
   const n = leftNormal(sub(b, a));
   let h = 0;
   for (const p of pts) {
     const d = dot(sub(p, a), n);
     if (Math.abs(d) > Math.abs(h)) h = d;
   }
-  const r = Math.abs(h) / L;
-  if (r < 0.065) return 0;
-  const theta = deg(Math.asin(Math.min(1, r / 0.2936)));
-  const q = Math.min(90, Math.max(15, Math.round(theta / 15) * 15));
-  return h > 0 ? q : -q;
+  return bendFromSagitta(h, L);
 }
 
 // Shape of a small mark: 'bar' | 'angle' | 'curl' | 'zigzag' | 'dot' | 'other'.

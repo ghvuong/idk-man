@@ -5,7 +5,7 @@ import {
 } from './state.js';
 import * as C from './canvas.js';
 import {
-  features, isScribble, isClosed, detectHook, tipIndex, estimateBend, markShape,
+  features, isScribble, isClosed, detectHook, detectDrawnHead, estimateBend, bendFromSagitta, markShape,
 } from './gestures.js';
 import * as G from './geom.js';
 import { CELL_W, CELL_H } from './render.js';
@@ -286,8 +286,9 @@ function handleStroke(raw, duration) {
   if (isClosed(f, U) && enclosesOtherNodes(raw, startNode)) { lassoSelect(raw); return; }
   if (startNode) { handleFromNode(raw, f, startNode); return; }
   if (isClosed(f, U)) { lassoSelect(raw); return; }
+  const r0 = C.regionOf(raw[0]), r1 = C.regionOf(raw[raw.length - 1]);
+  if (r0.col === r1.col && r0.row === r1.row) { startWriting({ cell: C.cellOf(raw[0]) }, raw); return; }
   const sc = C.cellOf(raw[0]), ec = C.cellOf(raw[raw.length - 1]);
-  if (sc.col === ec.col && sc.row === ec.row) { startWriting({ cell: sc }, raw); return; }
   const endNode = C.nodeAtCell(ec);
   const info = arrowInfo(raw);
   let ids = null;
@@ -344,15 +345,16 @@ function outward(raw, node) {
 
 function arrowInfo(raw) {
   const hook = detectHook(raw, U);
-  const tip = tipIndex(raw);
-  const trailing = G.pathLength(raw.slice(tip));
+  const head = detectDrawnHead(raw, U);
+  const tip = head >= 0 ? head : raw.length - 1;
   const main = raw.slice(hook ? hook.end : 0, tip + 1);
-  return { hook, tip, bend: estimateBend(main.length > 2 ? main : raw), drawnHead: trailing > U * 0.07 };
+  return { hook, tip, ...estimateBend(main.length > 2 ? main : raw), drawnHead: head >= 0 };
 }
 
 function edgeProps(info, dashed = false) {
   return {
     bend: info.bend,
+    looseness: info.looseness || 1,
     tail: info.hook ? (info.hook.side > 0 ? 'hook' : "hook'") : 'none',
     body: dashed ? 'dashed' : 'solid',
   };
@@ -473,7 +475,7 @@ function tryCorner(raw) {
   const n = best.n;
   let id = null;
   commit((d) => {
-    const t = d.nodeAt(n.col + sx, n.row + sy) || d.addNode(n.col + sx, n.row + sy, '');
+    const t = d.nodeNear(n.col + sx, n.row + sy, 0.75) || d.addNode(n.col + sx, n.row + sy, '');
     const existing = d.edges.find((e) => e.kind === 'corner' && e.from === n.id);
     if (existing) { existing.to = t.id; id = existing.id; } else id = d.addEdge(n.id, t.id, { kind: 'corner' }).id;
   });
@@ -616,9 +618,9 @@ export function flushPending() {
   if (!from) return;
   const all = p.strokes.flat();
   const endCell = C.cellOf(p.lastEnd);
-  if (endCell.col === from.col && endCell.row === from.row) return;
+  if (Math.abs(endCell.col - from.col) < 0.5 && Math.abs(endCell.row - from.row) < 0.5) return;
   const dashed = p.strokes.length > 1;
-  const info = { ...p.info, bend: dashed ? estimateBend(all) : p.info.bend };
+  const info = dashed ? { ...p.info, ...estimateBend(all) } : p.info;
   const target = C.nodeAtCell(endCell);
   if (target) { commitArrow(from, target, info, dashed); return; }
   let ids;
@@ -665,8 +667,9 @@ function startSelectGesture(ev, p) {
 }
 
 function moveNodesTo(p) {
-  const dc = Math.round((p.x - g.start.x) / CELL_W);
-  const dr = Math.round((p.y - g.start.y) / CELL_H);
+  const step = C.moveStep();
+  const dc = Math.round((p.x - g.start.x) / CELL_W / step) * step;
+  const dr = Math.round((p.y - g.start.y) / CELL_H / step) * step;
   if (dc === g.applied.dc && dr === g.applied.dr) return;
   const d = app.diagram;
   d.restore(g.before);
@@ -695,12 +698,8 @@ function bendTo(p) {
     let a = Math.round(-G.deg(Math.atan2(p.y - A.y, p.x - A.x)) / 45) * 45;
     e.loop = ((a % 360) + 360) % 360;
   } else {
-    const L = G.dist(A, B);
     const h = G.dot(G.sub(p, A), G.leftNormal(G.sub(B, A)));
-    const r = Math.abs(h) / Math.max(L, 1);
-    let th = r < 0.04 ? 0 : G.deg(Math.asin(Math.min(1, r / 0.2936)));
-    th = Math.round(th / 5) * 5;
-    e.bend = h > 0 ? th : -th;
+    Object.assign(e, bendFromSagitta(h, G.dist(A, B), 0.04));
     if (e.bend) e.shift = null;
   }
   changed({ diagram: true, quiet: true });

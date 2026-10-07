@@ -118,3 +118,39 @@ test('quiver link encodes quiver format version 0', () => {
   const json = JSON.parse(Buffer.from(url.split('#q=')[1], 'base64').toString('utf8'));
   assert.deepEqual(json, [0, 4, [0, 0, 'X_1'], [1, 1, 'Y'], [2, 1, 'Z'], [0, 2, 'X_2'], [0, 1], [3, 1], [1, 2]]);
 });
+
+test('fine positions become spacing adjustments; whole cells keep plain matrices', () => {
+  const d = new Diagram();
+  const t = d.addNode(0, 1, 'T'), x1 = d.addNode(1, 0, 'X_1'), y = d.addNode(2, 1, 'Y');
+  const x2 = d.addNode(1, 2, 'X_2'), z = d.addNode(2, 1.75, 'Z');
+  for (const [a, b] of [[t, x1], [t, y], [t, x2], [x1, y], [x2, y], [y, z]]) d.addEdge(a.id, b.id);
+  d.addEdge(t.id, z.id, { bend: -90, looseness: 1.6 });
+  assert.equal(toTikzCD(d), [
+    '\\begin{tikzcd}',
+    '  & X_1 \\arrow[dr] \\\\',
+    '  T \\arrow[ur] \\arrow[rr] \\arrow[ddr] \\arrow[drr, bend right=90, looseness=1.6] & & Y \\arrow[d] \\\\[-0.6em]',
+    '  & & Z \\\\[-1em]',
+    '  & X_2 \\arrow[uur]',
+    '\\end{tikzcd}',
+  ].join('\n'));
+  // Reading it back gives the same code; the quarter-cell gap Z–X_2 comes back as the 0.8em minimum.
+  const back = parseTikzCD(toTikzCD(d)).diagram;
+  assert.equal(toTikzCD(back), toTikzCD(d));
+  assert.deepEqual(back.nodes.map((n) => [n.label, n.col, n.row]).sort(), [['T', 0, 1], ['X_1', 1, 0], ['X_2', 1, 2.25], ['Y', 2, 1], ['Z', 2, 1.75]]);
+});
+
+test('column spacing goes in the first row, padded when that row is short', () => {
+  const d = new Diagram();
+  const a = d.addNode(0, 0, 'A'), b = d.addNode(0.5, 1, 'B'), c = d.addNode(2, 1, 'C');
+  d.addEdge(a.id, b.id);
+  d.addEdge(b.id, c.id);
+  assert.equal(toTikzCD(d), '\\begin{tikzcd}\n  A \\arrow[dr] &[-1.6em] &[1.7em] \\\\\n  & B \\arrow[r] & C\n\\end{tikzcd}');
+  assert.equal(toCD(d).ok, false); // A→B is diagonal in the matrix
+});
+
+test('imported spacing in other units and the looseness option', () => {
+  const { diagram } = parseTikzCD('\\begin{tikzcd} A \\arrow[r, bend left=90, looseness=2] &[10pt] B \\\\[-5mm] C \\end{tikzcd}');
+  const pos = Object.fromEntries(diagram.nodes.map((n) => [n.label, [n.col, n.row]]));
+  assert.deepEqual(pos, { A: [0, 0], B: [1.25, 0], C: [0, 0.5] });
+  assert.equal(diagram.edges[0].looseness, 2);
+});

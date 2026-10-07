@@ -12,12 +12,12 @@ const asDiagram = (x) => (x instanceof Diagram ? x : new Diagram(x));
 export function toCD(input) {
   const d = asDiagram(input);
   if (!d.nodes.length) return { ok: true, code: '\\begin{CD}\n\\end{CD}' };
-  const b = d.bounds();
+  const { cell, byCell, cols, rows } = matrixOf(d);
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
   const slots = new Map();
   let dropped = 0;
   for (const e of d.edges) {
-    const a = byId.get(e.from), z = byId.get(e.to);
+    const a = cell(byId.get(e.from)), z = cell(byId.get(e.to));
     const dc = z.col - a.col, dr = z.row - a.row;
     if (e.kind !== 'arrow') { dropped++; continue; } // CD has no corner marks or free labels
     if (e.from === e.to || Math.abs(dc) + Math.abs(dr) !== 1) return { ok: false, reason: 'cd.diagonal' };
@@ -33,15 +33,15 @@ export function toCD(input) {
   }
   const lab = (t) => (t.trim() ? `{${t.trim()}}` : '');
   const objAt = (c, r) => {
-    const n = d.nodeAt(c, r);
+    const n = byCell.get(`${c},${r}`);
     return n && n.label.trim() ? n.label.trim() : '{}';
   };
   const lines = [];
-  for (let r = b.r0; r <= b.r1; r++) {
+  for (let r = 0; r < rows; r++) {
     let line = '';
-    for (let c = b.c0; c <= b.c1; c++) {
+    for (let c = 0; c < cols; c++) {
       line += objAt(c, r);
-      if (c < b.c1) {
+      if (c < cols - 1) {
         const s = slots.get(`h:${c},${r}`);
         let arrow = '@.';
         if (s) {
@@ -57,9 +57,9 @@ export function toCD(input) {
       }
     }
     lines.push(line);
-    if (r < b.r1) {
+    if (r < rows - 1) {
       const cells = [];
-      for (let c = b.c0; c <= b.c1; c++) {
+      for (let c = 0; c < cols; c++) {
         const s = slots.get(`v:${c},${r}`);
         if (!s) { cells.push('@.'); continue; }
         if (s.eq) { cells.push('@|'); continue; }
@@ -72,6 +72,14 @@ export function toCD(input) {
     }
   }
   return { ok: true, dropped, code: `\\begin{CD}\n${lines.map((l) => '  ' + l.trim()).join(' \\\\\n')}\n\\end{CD}` };
+}
+
+// The tikz-cd matrix cell of each object (Diagram.grid), for formats that only know a plain grid.
+function matrixOf(d) {
+  const gr = d.grid();
+  const cell = (n) => ({ col: gr.col.index.get(n.col), row: gr.row.index.get(n.row) });
+  const byCell = new Map(d.nodes.map((n) => { const c = cell(n); return [`${c.col},${c.row}`, n]; }));
+  return { cell, byCell, cols: gr.col.count, rows: gr.row.count };
 }
 
 // ---------- xy-pic ----------
@@ -93,15 +101,15 @@ function xyStyle(e) {
 export function toXymatrix(input) {
   const d = asDiagram(input);
   if (!d.nodes.length) return '\\xymatrix{\n}';
-  const b = d.bounds();
+  const { cell, rows } = matrixOf(d);
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
   const shifts = d.shifts();
   const content = new Map();
-  const need = d.nodes.map((n) => ({ col: n.col, row: n.row }));
+  const need = d.nodes.map(cell);
   // Empty objects become "{}" so that no row is left blank (a blank line would end the paragraph).
-  for (const n of d.nodes) content.set(`${n.col},${n.row}`, n.label.trim() || '{}');
+  for (const n of d.nodes) { const c = cell(n); content.set(`${c.col},${c.row}`, n.label.trim() || '{}'); }
   for (const e of d.edges) {
-    const a = byId.get(e.from), z = byId.get(e.to);
+    const a = cell(byId.get(e.from)), z = cell(byId.get(e.to));
     const dir = directionLetters(z.col - a.col, z.row - a.row);
     let ar;
     if (e.kind === 'corner') {
@@ -115,7 +123,8 @@ export function toXymatrix(input) {
         const best = XY_LOOPS.reduce((p, q) => (Math.abs(((e.loop - q[0] + 540) % 360) - 180) < Math.abs(((e.loop - p[0] + 540) % 360) - 180) ? q : p));
         mods += `@${best[1]}`;
       } else if (e.bend) {
-        const amount = Math.abs(e.bend) >= 45 ? `${(Math.abs(e.bend) / 30).toFixed(1)}pc` : '';
+        const strength = Math.abs(e.bend) * e.looseness;
+        const amount = strength >= 45 ? `${(strength / 30).toFixed(1)}pc` : '';
         mods += `@/${e.bend > 0 ? '^' : '_'}${amount}/`;
       }
       const sh = shifts.get(e.id) || 0;
@@ -130,11 +139,11 @@ export function toXymatrix(input) {
     content.set(k, `${content.get(k) || ''} ${ar}`.trim());
   }
   const lines = [];
-  for (let r = b.r0; r <= b.r1; r++) {
+  for (let r = 0; r < rows; r++) {
     const cols = need.filter((c) => c.row === r).map((c) => c.col);
-    const last = cols.length ? Math.max(...cols) : b.c0;
+    const last = cols.length ? Math.max(...cols) : 0;
     const cells = [];
-    for (let c = b.c0; c <= last; c++) cells.push(content.get(`${c},${r}`) || '');
+    for (let c = 0; c <= last; c++) cells.push(content.get(`${c},${r}`) || '');
     lines.push(cells.join(' & ').replace(/^\s+/, '').replace(/\s+&/g, ' &'));
   }
   return `\\xymatrix{\n${lines.map((l) => '  ' + l).join(' \\\\\n')}\n}`;
@@ -147,12 +156,13 @@ export function toXymatrix(input) {
 export function toQuiverURL(input) {
   const d = asDiagram(input);
   if (!d.nodes.length) return 'https://q.uiver.app/';
-  const b = d.bounds();
+  const { cell } = matrixOf(d);
   const index = new Map();
   const cells = [];
   d.nodes.forEach((n, i) => {
     index.set(n.id, i);
-    const v = [n.col - b.c0, n.row - b.r0];
+    const c = cell(n);
+    const v = [c.col, c.row];
     if (n.label.trim()) v.push(n.label.trim());
     cells.push(v);
   });
@@ -183,7 +193,8 @@ export function toQuiverURL(input) {
       if (a) options.angle = a;
     } else if (e.bend) {
       // quiver: one curve step ≈ 18° of bend; positive curve bows to the right.
-      options.curve = -Math.round(e.bend / 18) || -Math.sign(e.bend);
+      const strength = e.bend * (Math.abs(e.bend) >= 90 ? e.looseness : 1);
+      options.curve = -Math.round(strength / 18) || -Math.sign(e.bend);
     }
     const sh = shifts.get(e.id) || 0;
     if (sh) options.offset = -Math.round(sh);

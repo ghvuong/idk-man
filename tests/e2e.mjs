@@ -112,7 +112,7 @@ await scenario('taps, labels and strokes give the Vakil 1.3.B diagram', async (s
   await s.line(0, 0, 1, 1);
   await s.line(0, 2, 1, 1);
   await s.line(1, 1, 2, 1, { bow: 0.12 });
-  assert.equal(await s.code(), '\\begin{tikzcd}\n  X_1 \\arrow[dr] \\\\\n  & Y \\arrow[r, bend left] & Z \\\\\n  X_2 \\arrow[ur]\n\\end{tikzcd}');
+  assert.equal(await s.code(), '\\begin{tikzcd}\n  X_1 \\arrow[dr] \\\\\n  & Y \\arrow[r, bend left=25] & Z \\\\\n  X_2 \\arrow[ur]\n\\end{tikzcd}');
 });
 
 await scenario('dashes make a dashed arrow to a new object; a zig-zag deletes it', async (s) => {
@@ -197,6 +197,29 @@ await scenario('long-press moves, select tool bends, lasso selects, undo restore
   await s.stroke(ring, 4);
   const sel = await s.page.evaluate(() => [...window.cdSketchpad.app.selection.nodes].map((id) => window.cdSketchpad.app.diagram.node(id).label).sort());
   assert.deepEqual(sel, ['A', 'C']);
+});
+
+await scenario('a stroke that bows out a lot keeps its roundness (bend 90 + looseness)', async (s) => {
+  await s.objects([[0, 0, 'T'], [1, 2, 'Z']]);
+  await s.line(0, 0, 1, 2, { bow: -0.47 });
+  assert.match(await s.code(), /T \\arrow\[ddr, bend right=90, looseness=1\.[5-7]\]/);
+});
+
+await scenario('zoomed in, objects move in quarter cells and the code gets spacing tweaks', async (s) => {
+  await s.objects([[0, 0, 'A'], [1, 0, 'B']]);
+  await s.line(0, 0, 1, 0);
+  assert.equal(await s.page.evaluate(() => window.cdSketchpad.app.view.k >= 1.25), true);
+  const b = await s.cell(1, 0), left = await s.cell(0.75, 0);
+  await s.page.mouse.move(b.x, b.y);
+  await s.page.mouse.down();
+  await s.page.waitForTimeout(600);
+  await s.page.mouse.move(left.x, left.y, { steps: 6 });
+  await s.page.mouse.up();
+  assert.equal(await s.code(), '\\begin{tikzcd}\n  A \\arrow[r] &[-0.8em] B\n\\end{tikzcd}');
+  // Shift+arrow nudges by a quarter cell as well.
+  await s.page.keyboard.press('Shift+ArrowDown');
+  await s.page.keyboard.press('Shift+ArrowDown');
+  assert.equal(await s.code(), '\\begin{tikzcd}\n  A \\arrow[dr] &[-0.8em] \\\\[-1em]\n  & B\n\\end{tikzcd}');
 });
 
 await scenario('tikz-cd import and CD export', async (s) => {

@@ -19,7 +19,10 @@ export function randomDiagram(seed) {
   const pick = (a) => a[Math.floor(r() * a.length)];
   const d = new Diagram();
   const n = 2 + Math.floor(r() * 5);
-  for (let i = 0; i < n; i++) d.addNode(Math.floor(r() * 4), Math.floor(r() * 3), pick(LABELS));
+  // A third of the diagrams use fine positions (quarter cells) on some objects.
+  const fine = r() < 0.33;
+  const coord = (max) => Math.floor(r() * max) + (fine && r() < 0.4 ? pick([0.25, 0.5, 0.75]) : 0);
+  for (let i = 0; i < n; i++) d.addNode(coord(4), coord(3), pick(LABELS));
   const nodes = d.nodes;
   const m = Math.floor(r() * 7);
   for (let i = 0; i < m; i++) {
@@ -33,7 +36,8 @@ export function randomDiagram(seed) {
       tail: pick(TAILS),
       body: pick(BODIES),
       double: r() < 0.15,
-      bend: r() < 0.3 ? pick([-60, -30, -15, 20, 30, 45]) : 0,
+      bend: r() < 0.3 ? pick([-90, -60, -30, -15, 20, 30, 45, 90]) : 0,
+      looseness: r() < 0.5 ? 1 : pick([1.3, 1.6, 2]),
       shift: r() < 0.1 ? pick([-2, -1, 1, 2]) : null,
       loop: pick([0, 45, 90, 180, 270]),
     });

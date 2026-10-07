@@ -162,6 +162,7 @@ button { cursor: pointer; }
 .canvas.tool-select { cursor: default; }
 .canvas.panning { cursor: grabbing; }
 .grid-dot { fill: var(--grid); }
+.grid-dot-minor { fill: var(--grid); opacity: 0.45; }
 .cell-hint { fill: var(--pen-soft); stroke: var(--pen-line); stroke-width: 1; stroke-dasharray: 4 4; }
 .node-selected { fill: var(--pen-soft); stroke: var(--pen); stroke-width: 1.5; }
 .node-hover { fill: none; stroke: var(--pen-line); stroke-width: 1; }

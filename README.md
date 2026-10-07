@@ -27,7 +27,7 @@ Bản trên claude.ai có thêm tính năng Claude đọc chữ viết tay và �
 | Thao tác | Kết quả |
 | --- | --- |
 | Chạm vào ô trống | Thêm đối tượng, gõ nhãn LaTeX (`X_1`, `A[x]/(x^3)`, …) |
-| Kéo một nét từ đối tượng A sang B | Mũi tên A → B. Nét cong → `bend left/right` |
+| Kéo một nét từ đối tượng A sang B | Mũi tên A → B. Nét cong → `bend left/right`; cong tròn hơn 90° → thêm `looseness` |
 | Kéo nét ra chỗ trống | Tự tạo đối tượng mới ở ô đó |
 | Vẽ nhiều gạch ngắn nối tiếp | Mũi tên nét đứt (`dashed`) |
 | Bắt đầu nét bằng một móc nhỏ | `hook` (↪) |
@@ -36,6 +36,7 @@ Bản trên claude.ai có thêm tính năng Claude đọc chữ viết tay và �
 | Vẽ dấu ⌟ trong hình vuông, sát một đỉnh | Dấu pullback (`phantom, "\lrcorner"`) |
 | Gạch zíc-zắc lên thứ gì đó | Xóa |
 | Khoanh vùng | Chọn nhiều đối tượng; giữ lâu rồi kéo để di chuyển |
+| Giữ lâu rồi kéo đối tượng | Di chuyển; bước dời nhỏ dần khi phóng to (1 ô → ½ ô → ¼ ô), chấm mờ là chỗ đặt được |
 | Viết tay nhãn vào ô trống hoặc cạnh mũi tên | Claude đọc chữ thành LaTeX (khi mở trên claude.ai); nơi khác thì mở ô nhập |
 
 Công cụ **Chọn**: kéo đối tượng để di chuyển, kéo mũi tên sang ngang để uốn cong, kéo nền để chọn vùng.
@@ -43,8 +44,12 @@ Công cụ **Phác tự do** (chỉ có trên claude.ai): vẽ cả sơ đồ, k
 *Từ ảnh chụp* nhận dạng một sơ đồ vẽ trên giấy.
 
 Bàn phím: `Enter` sửa nhãn · gõ phím bất kỳ khi đang chọn để đặt nhãn · `Delete` xóa ·
-`Ctrl+Z` / `Ctrl+Shift+Z` · phím mũi tên di chuyển · giữ `Space` rồi kéo để cuộn · `Ctrl`+cuộn hoặc hai
-ngón để thu phóng.
+`Ctrl+Z` / `Ctrl+Shift+Z` · phím mũi tên dời một ô, `Shift` + phím mũi tên dời ¼ ô · giữ `Space` rồi kéo
+để cuộn · `Ctrl`+cuộn hoặc hai ngón để thu phóng.
+
+Vị trí lẻ (không nằm đúng ô) vẫn xuất ra tikz-cd chuẩn: ma trận chỉ gồm các cột/hàng có đối tượng, còn
+khoảng cách được chỉnh bằng `&[…]` ở hàng đầu và `\\[…]` cuối hàng (tối thiểu 0.8em, dưới mức đó TikZ lỗi với
+mũi tên lượn sóng cong). Sơ đồ đặt đúng ô thì mã vẫn y như viết tay.
 
 Bảng bên phải cho phép chỉnh kiểu mũi tên (đầu, đuôi, thân, nét đôi ⇒, độ cong, dịch song song, vị trí nhãn)
 và xuất mã. Mũi tên song song giữa cùng hai đối tượng tự được tách bằng `shift left/right`. Nút

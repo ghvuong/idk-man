@@ -173,6 +173,7 @@ button { cursor: pointer; }
 .canvas.tool-select { cursor: default; }
 .canvas.panning { cursor: grabbing; }
 .grid-dot { fill: var(--grid); }
+.grid-dot-minor { fill: var(--grid); opacity: 0.45; }
 .cell-hint { fill: var(--pen-soft); stroke: var(--pen-line); stroke-width: 1; stroke-dasharray: 4 4; }
 .node-selected { fill: var(--pen-soft); stroke: var(--pen); stroke-width: 1.5; }
 .node-hover { fill: none; stroke: var(--pen-line); stroke-width: 1; }
@@ -640,9 +641,10 @@ const { app } = __require('./state.js');
 const { CELL_W, CELL_H, EDITOR_STYLE, editorLayout, edgeGeometry, drawDiagram, sceneBounds } = __require('./render.js');
 const G = __require('./geom.js');
 const { directionLetters } = __require('./tikz.js');
+const { Diagram, MIN_GAP, snapQ } = __require('./model.js');
 
 const NS = 'http://www.w3.org/2000/svg';
-let svg, viewport, grid, under, scene, overlay, stage;
+let svg, viewport, grid, gridMinor, minorPattern, under, scene, overlay, stage;
 let liveInk = null, ghost = null, pendingLayer = null, readingLayer = null, sketchLayer = null, lassoPath = null;
 
 const geo = { layout: null, geoms: new Map() };
@@ -651,6 +653,8 @@ function initCanvas() {
   svg = document.getElementById('canvas');
   viewport = document.getElementById('viewport');
   grid = document.getElementById('grid');
+  gridMinor = document.getElementById('grid-minor');
+  minorPattern = document.getElementById('grid-dots-minor');
   under = document.getElementById('under');
   scene = document.getElementById('scene');
   overlay = document.getElementById('overlay');
@@ -696,12 +700,33 @@ function applyView() {
   viewport.setAttribute('transform', `translate(${v.x} ${v.y}) scale(${v.k})`);
   const r = svg.getBoundingClientRect();
   const x0 = -v.x / v.k, y0 = -v.y / v.k;
-  grid.setAttribute('x', x0 - CELL_W);
-  grid.setAttribute('y', y0 - CELL_H);
-  grid.setAttribute('width', r.width / v.k + 2 * CELL_W);
-  grid.setAttribute('height', r.height / v.k + 2 * CELL_H);
+  for (const g of [grid, gridMinor]) {
+    g.setAttribute('x', x0 - CELL_W);
+    g.setAttribute('y', y0 - CELL_H);
+    g.setAttribute('width', r.width / v.k + 2 * CELL_W);
+    g.setAttribute('height', r.height / v.k + 2 * CELL_H);
+  }
+  // Faint dots at the positions objects snap to when moved (finer when zoomed in).
+  const step = moveStep();
+  gridMinor.style.display = step < 1 ? '' : 'none';
+  if (step < 1) {
+    const w = CELL_W * step, h = CELL_H * step;
+    minorPattern.setAttribute('width', w);
+    minorPattern.setAttribute('height', h);
+    minorPattern.setAttribute('x', -w / 2);
+    minorPattern.setAttribute('y', -h / 2);
+    const dot = minorPattern.firstElementChild;
+    dot.setAttribute('cx', w / 2);
+    dot.setAttribute('cy', h / 2);
+  }
   const z = document.getElementById('zoom-level');
   if (z) z.textContent = `${Math.round(v.k * 100)}%`;
+}
+
+// How far a dragged object jumps, in cells: about 30–60 screen pixels at any zoom.
+function moveStep() {
+  const k = app.view.k;
+  return k >= 1.25 ? 0.25 : k >= 0.6 ? 0.5 : 1;
 }
 
 function setView(x, y, k) {
@@ -806,13 +831,31 @@ function clearGhost() {
 
 // Preview of the arrow being drawn: straight line from the source to the target cell,
 // a dashed circle where a new object will appear, and the tikz-cd direction tag.
+// tikz-cd direction letters an arrow from `from` to the position `to` would get,
+// counted in the matrix the diagram would have with an object at `to`.
+let lettersCache = { key: '', value: '' };
+function previewLetters(from, to) {
+  const key = `${app.diagram.snapshot().length}|${from.id}|${to.col},${to.row}`;
+  if (lettersCache.key === key) return lettersCache.value;
+  const nodes = app.diagram.nodes.map((n) => ({ ...n }));
+  if (!app.diagram.nodeNear(to.col, to.row)) nodes.push({ id: '__ghost', col: to.col, row: to.row, label: '' });
+  const gr = new Diagram({ nodes, edges: [] }).grid();
+  const target = nodes.find((n) => n.col === to.col && n.row === to.row) || app.diagram.nodeNear(to.col, to.row);
+  const value = directionLetters(
+    gr.col.index.get(target.col) - gr.col.index.get(from.col),
+    gr.row.index.get(target.row) - gr.row.index.get(from.row),
+  );
+  lettersCache = { key, value };
+  return value;
+}
+
 function showGhost(fromNodeId, target, { dashed = false } = {}) {
   ghost.replaceChildren();
   const fromBox = geo.layout.boxes.get(fromNodeId);
   const from = app.diagram.node(fromNodeId);
   if (!fromBox || !from || !target) return;
   const tc = { x: target.col * CELL_W, y: target.row * CELL_H };
-  if (target.col === from.col && target.row === from.row) return;
+  if (Math.abs(target.col - from.col) < MIN_GAP && Math.abs(target.row - from.row) < MIN_GAP) return;
   const tBox = target.nodeId ? geo.layout.boxes.get(target.nodeId) : { x: tc.x, y: tc.y, hw: 10, hh: 10 };
   const curve = G.lineAsBezier({ x: fromBox.x, y: fromBox.y }, { x: tBox.x, y: tBox.y });
   const [t0, t1] = G.clipBezierToBoxes(curve, fromBox, tBox);
@@ -830,7 +873,7 @@ function showGhost(fromNodeId, target, { dashed = false } = {}) {
   }, ghost);
   if (!target.nodeId) mk('circle', { cx: tc.x, cy: tc.y, r: 12, class: 'ghost-node' }, ghost);
   // Direction letters as tikz-cd would write them.
-  const letters = directionLetters(target.col - from.col, target.row - from.row);
+  const letters = previewLetters(from, target.nodeId ? app.diagram.node(target.nodeId) : target);
   const mid = G.bezierPoint(vis, 0.5);
   const n = G.leftNormal(dir);
   const pos = G.add(mid, G.mul(n, 16));
@@ -844,25 +887,35 @@ function showGhost(fromNodeId, target, { dashed = false } = {}) {
 function showCellHint(cell) {
   ghost.replaceChildren();
   if (!cell) return;
+  const s = Number.isInteger(cell.col) && Number.isInteger(cell.row) ? 1 : 0.5;
   mk('rect', {
-    x: cell.col * CELL_W - CELL_W * 0.42, y: cell.row * CELL_H - CELL_H * 0.4,
-    width: CELL_W * 0.84, height: CELL_H * 0.8, rx: 14, class: 'cell-hint',
+    x: cell.col * CELL_W - CELL_W * 0.42 * s, y: cell.row * CELL_H - CELL_H * 0.4 * s,
+    width: CELL_W * 0.84 * s, height: CELL_H * 0.8 * s, rx: 14 * s, class: 'cell-hint',
   }, ghost);
 }
 
 // ---------- hit testing ----------
 
+// Where a new object drawn or tapped at p goes: the nearest whole cell when p is close to
+// one, otherwise the nearest half cell (when zoomed in enough to aim that finely).
 function cellOf(p) {
+  const step = app.view.k >= 0.6 ? 0.5 : 1;
+  const snap = (v) => (Math.abs(v - Math.round(v)) <= 0.3 ? Math.round(v) : snapQ(Math.round(v / step) * step));
+  return { col: snap(p.x / CELL_W), row: snap(p.y / CELL_H) };
+}
+
+// The whole cell containing p: used to tell whether a stroke stays in one place.
+function regionOf(p) {
   return { col: Math.round(p.x / CELL_W), row: Math.round(p.y / CELL_H) };
 }
 
 function nodeAtCell(cell) {
-  return app.diagram.nodeAt(cell.col, cell.row);
+  return app.diagram.nodeNear(cell.col, cell.row);
 }
 
-// The object whose cell contains p (cells are generous targets for fingers and pens).
+// The object nearest to p within half a cell each way (generous targets for fingers and pens).
 function nodeAtPoint(p) {
-  return nodeAtCell(cellOf(p));
+  return app.diagram.nodeNear(p.x / CELL_W, p.y / CELL_H, 0.5);
 }
 
 // Is p on the object's drawn label (with a little slack)?
@@ -893,7 +946,7 @@ function stageElement() {
   return stage;
 }
 
-return { get geo() { return geo; }, get initCanvas() { return initCanvas; }, get stageRect() { return stageRect; }, get toWorld() { return toWorld; }, get toStage() { return toStage; }, get applyView() { return applyView; }, get setView() { return setView; }, get zoomAt() { return zoomAt; }, get panBy() { return panBy; }, get fitView() { return fitView; }, get renderCanvas() { return renderCanvas; }, get renderSketchInk() { return renderSketchInk; }, get smoothPath() { return smoothPath; }, get setLiveInk() { return setLiveInk; }, get setLasso() { return setLasso; }, get setPendingInk() { return setPendingInk; }, get setReadingInk() { return setReadingInk; }, get clearGhost() { return clearGhost; }, get showGhost() { return showGhost; }, get showCellHint() { return showCellHint; }, get cellOf() { return cellOf; }, get nodeAtCell() { return nodeAtCell; }, get nodeAtPoint() { return nodeAtPoint; }, get onNodeBox() { return onNodeBox; }, get edgeAtPoint() { return edgeAtPoint; }, get svgFocus() { return svgFocus; }, get stageElement() { return stageElement; } };
+return { get geo() { return geo; }, get initCanvas() { return initCanvas; }, get stageRect() { return stageRect; }, get toWorld() { return toWorld; }, get toStage() { return toStage; }, get applyView() { return applyView; }, get moveStep() { return moveStep; }, get setView() { return setView; }, get zoomAt() { return zoomAt; }, get panBy() { return panBy; }, get fitView() { return fitView; }, get renderCanvas() { return renderCanvas; }, get renderSketchInk() { return renderSketchInk; }, get smoothPath() { return smoothPath; }, get setLiveInk() { return setLiveInk; }, get setLasso() { return setLasso; }, get setPendingInk() { return setPendingInk; }, get setReadingInk() { return setReadingInk; }, get clearGhost() { return clearGhost; }, get showGhost() { return showGhost; }, get showCellHint() { return showCellHint; }, get cellOf() { return cellOf; }, get regionOf() { return regionOf; }, get nodeAtCell() { return nodeAtCell; }, get nodeAtPoint() { return nodeAtPoint; }, get onNodeBox() { return onNodeBox; }, get edgeAtPoint() { return edgeAtPoint; }, get svgFocus() { return svgFocus; }, get stageElement() { return stageElement; } };
 };
 __defs['./examples.js'] = function (__require) {
 // Sample diagrams (the first one opens on a first visit).
@@ -957,12 +1010,12 @@ const asDiagram = (x) => (x instanceof Diagram ? x : new Diagram(x));
 function toCD(input) {
   const d = asDiagram(input);
   if (!d.nodes.length) return { ok: true, code: '\\begin{CD}\n\\end{CD}' };
-  const b = d.bounds();
+  const { cell, byCell, cols, rows } = matrixOf(d);
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
   const slots = new Map();
   let dropped = 0;
   for (const e of d.edges) {
-    const a = byId.get(e.from), z = byId.get(e.to);
+    const a = cell(byId.get(e.from)), z = cell(byId.get(e.to));
     const dc = z.col - a.col, dr = z.row - a.row;
     if (e.kind !== 'arrow') { dropped++; continue; } // CD has no corner marks or free labels
     if (e.from === e.to || Math.abs(dc) + Math.abs(dr) !== 1) return { ok: false, reason: 'cd.diagonal' };
@@ -978,15 +1031,15 @@ function toCD(input) {
   }
   const lab = (t) => (t.trim() ? `{${t.trim()}}` : '');
   const objAt = (c, r) => {
-    const n = d.nodeAt(c, r);
+    const n = byCell.get(`${c},${r}`);
     return n && n.label.trim() ? n.label.trim() : '{}';
   };
   const lines = [];
-  for (let r = b.r0; r <= b.r1; r++) {
+  for (let r = 0; r < rows; r++) {
     let line = '';
-    for (let c = b.c0; c <= b.c1; c++) {
+    for (let c = 0; c < cols; c++) {
       line += objAt(c, r);
-      if (c < b.c1) {
+      if (c < cols - 1) {
         const s = slots.get(`h:${c},${r}`);
         let arrow = '@.';
         if (s) {
@@ -1002,9 +1055,9 @@ function toCD(input) {
       }
     }
     lines.push(line);
-    if (r < b.r1) {
+    if (r < rows - 1) {
       const cells = [];
-      for (let c = b.c0; c <= b.c1; c++) {
+      for (let c = 0; c < cols; c++) {
         const s = slots.get(`v:${c},${r}`);
         if (!s) { cells.push('@.'); continue; }
         if (s.eq) { cells.push('@|'); continue; }
@@ -1017,6 +1070,14 @@ function toCD(input) {
     }
   }
   return { ok: true, dropped, code: `\\begin{CD}\n${lines.map((l) => '  ' + l.trim()).join(' \\\\\n')}\n\\end{CD}` };
+}
+
+// The tikz-cd matrix cell of each object (Diagram.grid), for formats that only know a plain grid.
+function matrixOf(d) {
+  const gr = d.grid();
+  const cell = (n) => ({ col: gr.col.index.get(n.col), row: gr.row.index.get(n.row) });
+  const byCell = new Map(d.nodes.map((n) => { const c = cell(n); return [`${c.col},${c.row}`, n]; }));
+  return { cell, byCell, cols: gr.col.count, rows: gr.row.count };
 }
 
 // ---------- xy-pic ----------
@@ -1038,15 +1099,15 @@ function xyStyle(e) {
 function toXymatrix(input) {
   const d = asDiagram(input);
   if (!d.nodes.length) return '\\xymatrix{\n}';
-  const b = d.bounds();
+  const { cell, rows } = matrixOf(d);
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
   const shifts = d.shifts();
   const content = new Map();
-  const need = d.nodes.map((n) => ({ col: n.col, row: n.row }));
+  const need = d.nodes.map(cell);
   // Empty objects become "{}" so that no row is left blank (a blank line would end the paragraph).
-  for (const n of d.nodes) content.set(`${n.col},${n.row}`, n.label.trim() || '{}');
+  for (const n of d.nodes) { const c = cell(n); content.set(`${c.col},${c.row}`, n.label.trim() || '{}'); }
   for (const e of d.edges) {
-    const a = byId.get(e.from), z = byId.get(e.to);
+    const a = cell(byId.get(e.from)), z = cell(byId.get(e.to));
     const dir = directionLetters(z.col - a.col, z.row - a.row);
     let ar;
     if (e.kind === 'corner') {
@@ -1060,7 +1121,8 @@ function toXymatrix(input) {
         const best = XY_LOOPS.reduce((p, q) => (Math.abs(((e.loop - q[0] + 540) % 360) - 180) < Math.abs(((e.loop - p[0] + 540) % 360) - 180) ? q : p));
         mods += `@${best[1]}`;
       } else if (e.bend) {
-        const amount = Math.abs(e.bend) >= 45 ? `${(Math.abs(e.bend) / 30).toFixed(1)}pc` : '';
+        const strength = Math.abs(e.bend) * e.looseness;
+        const amount = strength >= 45 ? `${(strength / 30).toFixed(1)}pc` : '';
         mods += `@/${e.bend > 0 ? '^' : '_'}${amount}/`;
       }
       const sh = shifts.get(e.id) || 0;
@@ -1075,11 +1137,11 @@ function toXymatrix(input) {
     content.set(k, `${content.get(k) || ''} ${ar}`.trim());
   }
   const lines = [];
-  for (let r = b.r0; r <= b.r1; r++) {
+  for (let r = 0; r < rows; r++) {
     const cols = need.filter((c) => c.row === r).map((c) => c.col);
-    const last = cols.length ? Math.max(...cols) : b.c0;
+    const last = cols.length ? Math.max(...cols) : 0;
     const cells = [];
-    for (let c = b.c0; c <= last; c++) cells.push(content.get(`${c},${r}`) || '');
+    for (let c = 0; c <= last; c++) cells.push(content.get(`${c},${r}`) || '');
     lines.push(cells.join(' & ').replace(/^\s+/, '').replace(/\s+&/g, ' &'));
   }
   return `\\xymatrix{\n${lines.map((l) => '  ' + l).join(' \\\\\n')}\n}`;
@@ -1092,12 +1154,13 @@ function toXymatrix(input) {
 function toQuiverURL(input) {
   const d = asDiagram(input);
   if (!d.nodes.length) return 'https://q.uiver.app/';
-  const b = d.bounds();
+  const { cell } = matrixOf(d);
   const index = new Map();
   const cells = [];
   d.nodes.forEach((n, i) => {
     index.set(n.id, i);
-    const v = [n.col - b.c0, n.row - b.r0];
+    const c = cell(n);
+    const v = [c.col, c.row];
     if (n.label.trim()) v.push(n.label.trim());
     cells.push(v);
   });
@@ -1128,7 +1191,8 @@ function toQuiverURL(input) {
       if (a) options.angle = a;
     } else if (e.bend) {
       // quiver: one curve step ≈ 18° of bend; positive curve bows to the right.
-      options.curve = -Math.round(e.bend / 18) || -Math.sign(e.bend);
+      const strength = e.bend * (Math.abs(e.bend) >= 90 ? e.looseness : 1);
+      options.curve = -Math.round(strength / 18) || -Math.sign(e.bend);
     }
     const sh = shifts.get(e.id) || 0;
     if (sh) options.offset = -Math.round(sh);
@@ -1504,34 +1568,57 @@ function detectHook(raw, unit) {
   return { side, end: Math.max(0, j - 1) };
 }
 
-// Index of the point farthest from the start: the arrow tip when a head was drawn in-stroke.
-function tipIndex(raw) {
-  let best = 0, bi = 0;
-  for (let i = 0; i < raw.length; i++) {
-    const d = dist(raw[0], raw[i]);
-    if (d > best) { best = d; bi = i; }
+// An arrowhead drawn at the end of the stroke: a sharp turn near the end after which the
+// pen only travels a little (one barb, or a V). Returns the index of the tip, or -1.
+function detectDrawnHead(raw, unit) {
+  const total = pathLength(raw);
+  if (total < unit * 0.45) return -1;
+  const pts = resample(raw, Math.max(1.5, unit / 60));
+  const tailBudget = Math.min(total * 0.35, unit * 0.45);
+  const k = 3;
+  let acc = 0;
+  let start = pts.length - 1;
+  while (start > k && acc < tailBudget) { acc += dist(pts[start - 1], pts[start]); start--; }
+  for (let i = Math.max(k, start); i < pts.length - k; i++) {
+    const a = Math.abs(angleBetween(sub(pts[i], pts[i - k]), sub(pts[i + k], pts[i])));
+    if (a > (100 * Math.PI) / 180) {
+      // Map back to the raw stroke by arc length.
+      const s = pathLength(pts.slice(0, i + 1));
+      let l = 0, j = 1;
+      for (; j < raw.length && l < s; j++) l += dist(raw[j - 1], raw[j]);
+      return Math.max(1, j - 1);
+    }
   }
-  return bi;
+  return -1;
 }
 
-// tikz-cd "bend" angle (degrees, + = left) that matches how far the stroke bows out.
-// A tikz bend of θ with looseness 1 bulges by 0.2936·L·sin θ at its middle.
+// tikz "bend" (degrees, + = left) and "looseness" for a curve whose middle is `h` away from
+// a chord of length L. A bend θ with looseness λ bulges by 0.2936·λ·L·sin θ; up to 90° the
+// angle alone matches the drawing, beyond that the looseness grows.
+function bendFromSagitta(h, L, minRatio = 0.065) {
+  const r = Math.abs(h) / Math.max(L, 1e-9);
+  if (r < minRatio) return { bend: 0, looseness: 1 };
+  const sign = h > 0 ? 1 : -1;
+  if (r <= 0.2936) {
+    const theta = Math.max(5, Math.min(90, Math.round(deg(Math.asin(r / 0.2936)) / 5) * 5));
+    return { bend: sign * theta, looseness: 1 };
+  }
+  return { bend: sign * 90, looseness: Math.min(4, Math.round((r / 0.2936) * 10) / 10) };
+}
+
+// The bend that matches how far a stroke bows out from the line between its ends.
 function estimateBend(pts) {
-  if (pts.length < 3) return 0;
+  if (pts.length < 3) return { bend: 0, looseness: 1 };
   const a = pts[0], b = pts[pts.length - 1];
   const L = dist(a, b);
-  if (L < 1) return 0;
+  if (L < 1) return { bend: 0, looseness: 1 };
   const n = leftNormal(sub(b, a));
   let h = 0;
   for (const p of pts) {
     const d = dot(sub(p, a), n);
     if (Math.abs(d) > Math.abs(h)) h = d;
   }
-  const r = Math.abs(h) / L;
-  if (r < 0.065) return 0;
-  const theta = deg(Math.asin(Math.min(1, r / 0.2936)));
-  const q = Math.min(90, Math.max(15, Math.round(theta / 15) * 15));
-  return h > 0 ? q : -q;
+  return bendFromSagitta(h, L);
 }
 
 // Shape of a small mark: 'bar' | 'angle' | 'curl' | 'zigzag' | 'dot' | 'other'.
@@ -1568,7 +1655,7 @@ function markShape(raw, unit) {
 
 
 
-return { get resample() { return resample; }, get features() { return features; }, get isScribble() { return isScribble; }, get isClosed() { return isClosed; }, get detectHook() { return detectHook; }, get tipIndex() { return tipIndex; }, get estimateBend() { return estimateBend; }, get markShape() { return markShape; }, get centroid() { return centroid; }, get bboxOf() { return bboxOf; }, get pathLength() { return pathLength; } };
+return { get resample() { return resample; }, get features() { return features; }, get isScribble() { return isScribble; }, get isClosed() { return isClosed; }, get detectHook() { return detectHook; }, get detectDrawnHead() { return detectDrawnHead; }, get bendFromSagitta() { return bendFromSagitta; }, get estimateBend() { return estimateBend; }, get markShape() { return markShape; }, get centroid() { return centroid; }, get bboxOf() { return bboxOf; }, get pathLength() { return pathLength; } };
 };
 __defs['./i18n.js'] = function (__require) {
 // Interface strings. Vietnamese first; English for everyone else.
@@ -1960,6 +2047,7 @@ const { saveFile, svgString, svgToPng, inkToPng } = __require('./io.js');
 const { aiReady, recognizeLabel, recognizeDiagram, errorKind } = __require('./ai.js');
 const { EXAMPLES } = __require('./examples.js');
 const { emptyDiagram } = __require('./model.js');
+const { centroid } = __require('./geom.js');
 
 const $ = (id) => document.getElementById(id);
 
@@ -2010,9 +2098,10 @@ function showReading() {
 async function onHandwriting(p) {
   let target;
   if (p.target.cell) {
-    const { col, row } = p.target.cell;
+    // The object goes where the writing is centred, not where its first stroke began.
+    const { col, row } = C.cellOf(centroid(p.strokes.flat()));
     let id;
-    const existing = app.diagram.nodeAt(col, row);
+    const existing = app.diagram.nodeNear(col, row);
     if (existing && existing.label.trim()) return; // never overwrite a label from stray ink
     if (existing) id = existing.id;
     else commit((d) => { id = d.addNode(col, row, '').id; });
@@ -2096,7 +2185,7 @@ function placeRecognized(res, origin, removeInk) {
     const minR = Math.min(...res.nodes.map((n) => n.row));
     let ox = origin.col - minC;
     const oy = origin.row - minR;
-    while (res.nodes.some((n) => d.nodeAt(n.col + ox, n.row + oy))) ox++;
+    while (res.nodes.some((n) => d.nodeNear(n.col + ox, n.row + oy))) ox++;
     const ids = new Map();
     for (const n of res.nodes) ids.set(n.key, d.addNode(n.col + ox, n.row + oy, n.label).id);
     for (const e of res.edges) {
@@ -2108,7 +2197,7 @@ function placeRecognized(res, origin, removeInk) {
     for (const c of res.corners) {
       const a = d.node(ids.get(c.at)), b = d.node(ids.get(c.toward));
       const sx = Math.sign(b.col - a.col) || 1, sy = Math.sign(b.row - a.row) || 1;
-      const target = d.nodeAt(a.col + sx, a.row + sy) || d.addNode(a.col + sx, a.row + sy, '');
+      const target = d.nodeNear(a.col + sx, a.row + sy, 0.75) || d.addNode(a.col + sx, a.row + sy, '');
       d.addEdge(a.id, target.id, { kind: 'corner' });
     }
   });
@@ -2121,7 +2210,7 @@ async function recognizeSketch() {
   const img = await inkToPng(strokes, { maxSide: 1200, pad: 28, width: 3.2 });
   const pts = strokes.flatMap((s) => s.points);
   const x0 = Math.min(...pts.map((p) => p.x)), y0 = Math.min(...pts.map((p) => p.y));
-  const origin = C.cellOf({ x: x0 + CELL_W * 0.3, y: y0 + CELL_H * 0.3 });
+  const origin = C.regionOf({ x: x0 + CELL_W * 0.3, y: y0 + CELL_H * 0.3 });
   await runRecognition(img.blob, origin, { removeInk: true });
 }
 
@@ -2291,8 +2380,9 @@ function onKey(e) {
   const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (dirs[key] && app.selection.nodes.size) {
     e.preventDefault();
+    const step = e.shiftKey ? 0.25 : 1; // Shift: fine nudge
     const [dc, dr] = dirs[key];
-    commit((d) => d.moveNodes([...app.selection.nodes], dc, dr));
+    commit((d) => d.moveNodes([...app.selection.nodes], dc * step, dr * step));
     return;
   }
   if (!e.altKey && key.length === 1 && key !== ' ') {
@@ -2579,8 +2669,8 @@ function fallbackText(e) {
 return { get mathIsReady() { return mathIsReady; }, get onMathChange() { return onMathChange; }, get initMath() { return initMath; }, get measureTeX() { return measureTeX; }, get texElement() { return texElement; }, get texToRuns() { return texToRuns; } };
 };
 __defs['./model.js'] = function (__require) {
-// Diagram model: objects sit on an integer grid (col, row), arrows join them.
-// Raw ink strokes (for handwriting recognition) live alongside.
+// Diagram model: objects sit on a grid (col, row) in cell units, in steps of a quarter cell;
+// arrows join them. Raw ink strokes (for handwriting recognition) live alongside.
 
 const HEADS = ['to', 'epi', 'none', 'harpoon', "harpoon'"];
 const TAILS = ['none', 'hook', "hook'", 'mono', 'mapsto'];
@@ -2596,6 +2686,7 @@ const EDGE_DEFAULTS = Object.freeze({
   body: 'solid',
   double: false,
   bend: 0, // degrees, positive = tikz-cd "bend left"
+  looseness: 1, // tikz "looseness" for bends rounder than 90°
   shift: null, // null = automatic for parallel arrows; else integer units of tikz-cd "shift left"
   loop: 90, // loop direction in degrees (math convention, 90 = above); used when from === to
   kind: 'arrow', // 'arrow' | 'corner' (pullback/pushout mark) | 'phantom' (label only, e.g. ≅)
@@ -2616,6 +2707,7 @@ function normalizeEdge(e) {
     body: pick(e.body, BODIES, 'solid'),
     double: !!e.double,
     bend: clampBend(Number(e.bend) || 0),
+    looseness: Math.min(4, Math.max(1, Math.round((Number(e.looseness) || 1) * 10) / 10)),
     shift: e.shift === null || e.shift === undefined || e.shift === '' ? null : Math.round(Number(e.shift)) || 0,
     loop: Number.isFinite(Number(e.loop)) ? Number(e.loop) : 90,
     kind: KINDS.includes(e.kind) ? e.kind : 'arrow',
@@ -2627,6 +2719,12 @@ function normalizeEdge(e) {
 function clampBend(b) {
   return Math.max(-90, Math.min(90, Math.round(b)));
 }
+
+// Positions snap to quarter cells.
+const snapQ = (v) => Math.round(v * 4) / 4;
+
+// Two objects closer than this (in both directions, in cells) would overlap.
+const MIN_GAP = 0.5;
 
 function emptyDiagram() {
   return { nodes: [], edges: [], ink: [] };
@@ -2641,7 +2739,7 @@ class Diagram {
     const seen = new Set();
     this.nodes = [];
     for (const n of data.nodes || []) {
-      const node = { id: String(n.id), col: Math.round(n.col) || 0, row: Math.round(n.row) || 0, label: String(n.label ?? '') };
+      const node = { id: String(n.id), col: snapQ(Number(n.col) || 0), row: snapQ(Number(n.row) || 0), label: String(n.label ?? '') };
       const key = `${node.col},${node.row}`;
       if (seen.has(key)) continue; // one object per cell
       seen.add(key);
@@ -2697,8 +2795,21 @@ class Diagram {
     return this.nodes.find((n) => n.col === col && n.row === row) || null;
   }
 
+  // The object nearest to (col, row) that is within `tol` cells in both directions.
+  nodeNear(col, row, tol = MIN_GAP, except = null) {
+    let best = null, bestD = Infinity;
+    for (const n of this.nodes) {
+      if (except && except.has(n.id)) continue;
+      const dc = Math.abs(n.col - col), dr = Math.abs(n.row - row);
+      if (dc < tol && dr < tol && dc + dr < bestD) { best = n; bestD = dc + dr; }
+    }
+    return best;
+  }
+
   addNode(col, row, label = '') {
-    const existing = this.nodeAt(col, row);
+    col = snapQ(col);
+    row = snapQ(row);
+    const existing = this.nodeNear(col, row);
     if (existing) return existing;
     const node = { id: this.newId('n'), col, row, label };
     this.nodes.push(node);
@@ -2730,8 +2841,7 @@ class Diagram {
     for (const id of ids) {
       const n = this.node(id);
       if (!n) continue;
-      const other = this.nodeAt(n.col + dc, n.row + dr);
-      if (other && !moving.has(other.id)) return false;
+      if (this.nodeNear(snapQ(n.col + dc), snapQ(n.row + dr), MIN_GAP, moving)) return false;
     }
     return true;
   }
@@ -2740,7 +2850,7 @@ class Diagram {
     if (!this.canMove(ids, dc, dr)) return false;
     for (const id of ids) {
       const n = this.node(id);
-      if (n) { n.col += dc; n.row += dr; }
+      if (n) { n.col = snapQ(n.col + dc); n.row = snapQ(n.row + dr); }
     }
     return true;
   }
@@ -2754,6 +2864,37 @@ class Diagram {
       r0 = Math.min(r0, n.row); r1 = Math.max(r1, n.row);
     }
     return { c0, r0, c1, r1 };
+  }
+
+  // The tikz-cd matrix behind the drawing. On an axis where objects are whole cells apart,
+  // matrix columns (rows) are the cells themselves, empty ones included, as people
+  // write tikz-cd by hand. Otherwise only occupied positions become columns (rows), and
+  // gaps other than one cell become spacing adjustments in em: `&[Δ]` and `\\[Δ]`.
+  grid() {
+    const axis = (values, pitch, minAdjust) => {
+      const uniq = [...new Set(values)].sort((a, b) => a - b);
+      const index = new Map();
+      if (!uniq.length) return { index, count: 0, adjust: [] };
+      // Whole cells apart (wherever the first one sits): a plain matrix, empty cells included.
+      const lo = uniq[0];
+      if (uniq.every((v) => Number.isInteger(v - lo))) {
+        const hi = uniq[uniq.length - 1];
+        for (let v = lo; v <= hi; v++) index.set(v, v - lo);
+        return { index, count: hi - lo + 1, adjust: new Array(hi - lo).fill(0) };
+      }
+      uniq.forEach((v, i) => index.set(v, i));
+      const adjust = [];
+      for (let i = 0; i + 1 < uniq.length; i++) {
+        const gap = uniq[i + 1] - uniq[i];
+        adjust.push(Math.max(minAdjust, Math.round((gap - 1) * pitch * 10) / 10) || 0);
+      }
+      return { index, count: uniq.length, adjust };
+    };
+    // Separations never drop below 0.8em: closer than that, TikZ fails on bent squiggly arrows.
+    return {
+      col: axis(this.nodes.map((n) => n.col), GRID_PITCH.col, -1.6),
+      row: axis(this.nodes.map((n) => n.row), GRID_PITCH.row, -1.0),
+    };
   }
 
   // Effective sideways shift of every arrow. Parallel straight arrows between the
@@ -2780,6 +2921,9 @@ class Diagram {
     return out;
   }
 }
+
+// One editor cell, in em of extra tikz-cd spacing: about what an empty column (row) adds.
+const GRID_PITCH = { col: 3.3, row: 2.5 };
 
 class History {
   constructor(limit = 300) {
@@ -2814,7 +2958,7 @@ class History {
   }
 }
 
-return { get HEADS() { return HEADS; }, get TAILS() { return TAILS; }, get BODIES() { return BODIES; }, get SIDES() { return SIDES; }, get KINDS() { return KINDS; }, get EDGE_DEFAULTS() { return EDGE_DEFAULTS; }, get normalizeEdge() { return normalizeEdge; }, get clampBend() { return clampBend; }, get emptyDiagram() { return emptyDiagram; }, get Diagram() { return Diagram; }, get History() { return History; } };
+return { get HEADS() { return HEADS; }, get TAILS() { return TAILS; }, get BODIES() { return BODIES; }, get SIDES() { return SIDES; }, get KINDS() { return KINDS; }, get EDGE_DEFAULTS() { return EDGE_DEFAULTS; }, get normalizeEdge() { return normalizeEdge; }, get clampBend() { return clampBend; }, get snapQ() { return snapQ; }, get MIN_GAP() { return MIN_GAP; }, get emptyDiagram() { return emptyDiagram; }, get Diagram() { return Diagram; }, get GRID_PITCH() { return GRID_PITCH; }, get History() { return History; } };
 };
 __defs['./panel.js'] = function (__require) {
 // Side panel (inspector + generated code), inline label editor, toasts, hints, dialogs.
@@ -2986,6 +3130,8 @@ function closeEditor(keep = true) {
 
 // ---------- inspector ----------
 
+const fmtPos = (v) => String(v).replace('.', document.documentElement.lang === 'vi' ? ',' : '.');
+
 const HEADS = [['to', '→'], ['epi', '↠'], ['harpoon', '⇀'], ["harpoon'", '⇁'], ['none', '—']];
 const TAILS = [['none', '–'], ['hook', '↪'], ["hook'", '<span class="flip">↪</span>'], ['mono', '↣'], ['mapsto', '↦']];
 const BODIES = [['solid', '—'], ['dashed', '⇢'], ['dotted', '⋯'], ['squiggly', '⇝']];
@@ -2995,6 +3141,23 @@ const TITLES = {
   tail: { none: '—', hook: 'hook', "hook'": "hook'", mono: 'tail', mapsto: 'maps to' },
   body: { solid: '—', dashed: 'dashed', dotted: 'dotted', squiggly: 'squiggly' },
 };
+
+// One "curvature" slider: up to 90° it is the bend angle; beyond, the bend stays at 90° and
+// the looseness grows (180 ↔ looseness 3).
+function curvatureOf(e) {
+  const a = Math.abs(e.bend);
+  return Math.sign(e.bend) * (a + (a >= 90 ? (e.looseness - 1) * 45 : 0));
+}
+
+function fromCurvature(v) {
+  const a = Math.abs(v);
+  if (a <= 90) return { bend: v, looseness: 1 };
+  return { bend: Math.sign(v) * 90, looseness: Math.round((1 + (a - 90) / 45) * 10) / 10 };
+}
+
+function curvatureText(e) {
+  return e.looseness !== 1 ? `${e.bend}° ×${e.looseness}` : `${e.bend}°`;
+}
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -3023,7 +3186,7 @@ function renderInspector() {
       <div class="btn-row"><button class="btn danger" data-act="delete">${esc(t('act.delete'))}</button></div>`;
   } else if (single.kind === 'node') {
     const n = d.node(single.id);
-    el.innerHTML = `<h2>${esc(t('insp.node'))} <span class="cellref">· ${esc(t('insp.cell', { r: n.row, c: n.col }))}</span></h2>
+    el.innerHTML = `<h2>${esc(t('insp.node'))} <span class="cellref">· ${esc(t('insp.cell', { r: fmtPos(n.row), c: fmtPos(n.col) }))}</span></h2>
       <div class="field"><label for="insp-label">${esc(t('insp.label'))}</label>
         <input type="text" id="insp-label" value="${esc(n.label)}" placeholder="${esc(t('insp.label.ph'))}" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
       <div class="btn-row"><button class="btn" data-act="corner">${esc(t('insp.corner'))}</button>
@@ -3046,7 +3209,7 @@ function renderInspector() {
         <div class="row">${seg('body', BODIES, e.body)}${seg('double', [['true', '⇒', t('insp.double')]], String(e.double))}</div></div>
       ${isLoop ? `<div class="field"><span class="field-name">${esc(t('insp.loop'))}</span>${seg('loop', LOOPS, e.loop)}</div>` : `
       <div class="field"><label for="insp-bend">${esc(t('insp.bend'))}</label>
-        <div class="row"><input type="range" id="insp-bend" min="-90" max="90" step="5" value="${e.bend}"><output id="insp-bend-out">${e.bend}°</output></div></div>
+        <div class="row"><input type="range" id="insp-bend" min="-180" max="180" step="5" value="${curvatureOf(e)}"><output id="insp-bend-out">${curvatureText(e)}</output></div></div>
       <div class="field"><span class="field-name">${esc(t('insp.shift'))}</span>${seg('shift', shiftOpts, e.shift === null ? 'auto' : e.shift, 'text')}</div>`}` : ''}
       ${!isLoop ? `<div class="field"><span class="field-name">${esc(t('insp.kind'))}</span>
         ${seg('kind', [['arrow', esc(t('kind.arrow'))], ['phantom', esc(t('kind.phantom'))], ['corner', esc(t('kind.corner'))]], e.kind, 'text')}</div>` : ''}
@@ -3082,8 +3245,8 @@ function initInspector() {
     } else if (ev.target.id === 'insp-bend') {
       const e = app.diagram.edge(single.id);
       if (labelBefore === null) labelBefore = app.diagram.snapshot();
-      mutateQuietly(() => { e.bend = Number(ev.target.value); if (e.bend) e.shift = null; });
-      $('insp-bend-out').textContent = `${e.bend}°`;
+      mutateQuietly(() => { Object.assign(e, fromCurvature(Number(ev.target.value))); if (e.bend) e.shift = null; });
+      $('insp-bend-out').textContent = curvatureText(e);
     }
   });
   el.addEventListener('change', (ev) => {
@@ -3129,7 +3292,7 @@ function initInspector() {
           // A corner mark points diagonally; make sure it does.
           const a = d.node(e.from), b = d.node(e.to);
           const dc = Math.sign(b.col - a.col) || 1, dr = Math.sign(b.row - a.row) || 1;
-          const target = d.nodeAt(a.col + dc, a.row + dr) || d.addNode(a.col + dc, a.row + dr, '');
+          const target = d.nodeNear(a.col + dc, a.row + dr, 0.75) || d.addNode(a.col + dc, a.row + dr, '');
           e.to = target.id;
         }
       } else e[name] = v;
@@ -3152,7 +3315,7 @@ function addCornerFor(nodeId) {
   }
   let id;
   commit((dd) => {
-    const target = dd.nodeAt(n.col + sx, n.row + sy) || dd.addNode(n.col + sx, n.row + sy, '');
+    const target = dd.nodeNear(n.col + sx, n.row + sy, 0.75) || dd.addNode(n.col + sx, n.row + sy, '');
     const existing = dd.edges.find((e) => e.kind === 'corner' && e.from === nodeId);
     if (existing) { existing.to = target.id; id = existing.id; } else id = dd.addEdge(nodeId, target.id, { kind: 'corner' }).id;
   });
@@ -3262,8 +3425,8 @@ function openHelp() {
   const lang = document.documentElement.lang === 'en' ? 'en' : 'vi';
   const rows = HELP.map(([svg, text]) => `<dt><svg viewBox="0 0 88 44" aria-hidden="true">${svg}</svg></dt><dd>${text[lang]}</dd>`).join('');
   const keys = lang === 'vi'
-    ? '<kbd>Enter</kbd> sửa nhãn · gõ phím bất kỳ khi đang chọn để đặt nhãn · <kbd>Delete</kbd> xóa · <kbd>Ctrl</kbd>+<kbd>Z</kbd> hoàn tác · phím mũi tên di chuyển · giữ <kbd>Space</kbd> rồi kéo để cuộn · <kbd>Ctrl</kbd>+cuộn chuột hoặc hai ngón để thu phóng.'
-    : '<kbd>Enter</kbd> edits the label · start typing with something selected to label it · <kbd>Delete</kbd> deletes · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes · arrow keys move · hold <kbd>Space</kbd> and drag to pan · <kbd>Ctrl</kbd>+wheel or two fingers to zoom.';
+    ? '<kbd>Enter</kbd> sửa nhãn · gõ phím bất kỳ khi đang chọn để đặt nhãn · <kbd>Delete</kbd> xóa · <kbd>Ctrl</kbd>+<kbd>Z</kbd> hoàn tác · phím mũi tên dời một ô, thêm <kbd>Shift</kbd> để dời ¼ ô · giữ <kbd>Space</kbd> rồi kéo để cuộn · <kbd>Ctrl</kbd>+cuộn chuột hoặc hai ngón để thu phóng. Kéo đối tượng thì bước dời theo mức phóng to: càng phóng to càng dời được ít (đến ¼ ô); các chấm mờ là chỗ có thể đặt.'
+    : '<kbd>Enter</kbd> edits the label · start typing with something selected to label it · <kbd>Delete</kbd> deletes · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes · arrow keys move by a cell, with <kbd>Shift</kbd> by a quarter · hold <kbd>Space</kbd> and drag to pan · <kbd>Ctrl</kbd>+wheel or two fingers to zoom. Dragged objects move in steps that shrink as you zoom in (down to a quarter cell); the faint dots show where they can land.';
   $('help-body').innerHTML = `<h2 id="help-title">${esc(t('help.title'))}</h2><dl class="help-list">${rows}</dl><p class="help-keys">${keys}</p>`;
   $('help-dialog').showModal();
 }
@@ -3275,7 +3438,7 @@ __defs['./pen.js'] = function (__require) {
 
 const { app, commit, select, clearSelection, changed, recordFrom } = __require('./state.js');
 const C = __require('./canvas.js');
-const { features, isScribble, isClosed, detectHook, tipIndex, estimateBend, markShape } = __require('./gestures.js');
+const { features, isScribble, isClosed, detectHook, detectDrawnHead, estimateBend, bendFromSagitta, markShape } = __require('./gestures.js');
 const G = __require('./geom.js');
 const { CELL_W, CELL_H } = __require('./render.js');
 
@@ -3555,8 +3718,9 @@ function handleStroke(raw, duration) {
   if (isClosed(f, U) && enclosesOtherNodes(raw, startNode)) { lassoSelect(raw); return; }
   if (startNode) { handleFromNode(raw, f, startNode); return; }
   if (isClosed(f, U)) { lassoSelect(raw); return; }
+  const r0 = C.regionOf(raw[0]), r1 = C.regionOf(raw[raw.length - 1]);
+  if (r0.col === r1.col && r0.row === r1.row) { startWriting({ cell: C.cellOf(raw[0]) }, raw); return; }
   const sc = C.cellOf(raw[0]), ec = C.cellOf(raw[raw.length - 1]);
-  if (sc.col === ec.col && sc.row === ec.row) { startWriting({ cell: sc }, raw); return; }
   const endNode = C.nodeAtCell(ec);
   const info = arrowInfo(raw);
   let ids = null;
@@ -3613,15 +3777,16 @@ function outward(raw, node) {
 
 function arrowInfo(raw) {
   const hook = detectHook(raw, U);
-  const tip = tipIndex(raw);
-  const trailing = G.pathLength(raw.slice(tip));
+  const head = detectDrawnHead(raw, U);
+  const tip = head >= 0 ? head : raw.length - 1;
   const main = raw.slice(hook ? hook.end : 0, tip + 1);
-  return { hook, tip, bend: estimateBend(main.length > 2 ? main : raw), drawnHead: trailing > U * 0.07 };
+  return { hook, tip, ...estimateBend(main.length > 2 ? main : raw), drawnHead: head >= 0 };
 }
 
 function edgeProps(info, dashed = false) {
   return {
     bend: info.bend,
+    looseness: info.looseness || 1,
     tail: info.hook ? (info.hook.side > 0 ? 'hook' : "hook'") : 'none',
     body: dashed ? 'dashed' : 'solid',
   };
@@ -3742,7 +3907,7 @@ function tryCorner(raw) {
   const n = best.n;
   let id = null;
   commit((d) => {
-    const t = d.nodeAt(n.col + sx, n.row + sy) || d.addNode(n.col + sx, n.row + sy, '');
+    const t = d.nodeNear(n.col + sx, n.row + sy, 0.75) || d.addNode(n.col + sx, n.row + sy, '');
     const existing = d.edges.find((e) => e.kind === 'corner' && e.from === n.id);
     if (existing) { existing.to = t.id; id = existing.id; } else id = d.addEdge(n.id, t.id, { kind: 'corner' }).id;
   });
@@ -3885,9 +4050,9 @@ function flushPending() {
   if (!from) return;
   const all = p.strokes.flat();
   const endCell = C.cellOf(p.lastEnd);
-  if (endCell.col === from.col && endCell.row === from.row) return;
+  if (Math.abs(endCell.col - from.col) < 0.5 && Math.abs(endCell.row - from.row) < 0.5) return;
   const dashed = p.strokes.length > 1;
-  const info = { ...p.info, bend: dashed ? estimateBend(all) : p.info.bend };
+  const info = dashed ? { ...p.info, ...estimateBend(all) } : p.info;
   const target = C.nodeAtCell(endCell);
   if (target) { commitArrow(from, target, info, dashed); return; }
   let ids;
@@ -3934,8 +4099,9 @@ function startSelectGesture(ev, p) {
 }
 
 function moveNodesTo(p) {
-  const dc = Math.round((p.x - g.start.x) / CELL_W);
-  const dr = Math.round((p.y - g.start.y) / CELL_H);
+  const step = C.moveStep();
+  const dc = Math.round((p.x - g.start.x) / CELL_W / step) * step;
+  const dr = Math.round((p.y - g.start.y) / CELL_H / step) * step;
   if (dc === g.applied.dc && dr === g.applied.dr) return;
   const d = app.diagram;
   d.restore(g.before);
@@ -3964,12 +4130,8 @@ function bendTo(p) {
     let a = Math.round(-G.deg(Math.atan2(p.y - A.y, p.x - A.x)) / 45) * 45;
     e.loop = ((a % 360) + 360) % 360;
   } else {
-    const L = G.dist(A, B);
     const h = G.dot(G.sub(p, A), G.leftNormal(G.sub(B, A)));
-    const r = Math.abs(h) / Math.max(L, 1);
-    let th = r < 0.04 ? 0 : G.deg(Math.asin(Math.min(1, r / 0.2936)));
-    th = Math.round(th / 5) * 5;
-    e.bend = h > 0 ? th : -th;
+    Object.assign(e, bendFromSagitta(h, G.dist(A, B), 0.04));
     if (e.bend) e.shift = null;
   }
   changed({ diagram: true, quiet: true });
@@ -4064,41 +4226,39 @@ function editorLayout(d, style = EDITOR_STYLE) {
   return { boxes, cellXY: (c, r) => ({ x: c * CELL_W, y: r * CELL_H }) };
 }
 
-// Columns as wide as their widest object, separated like tikz-cd's defaults
-// (column sep 2.4em, row sep 1.8em, cell inner sep 1ex × 0.85ex).
+// The tikz-cd matrix (Diagram.grid) laid out like tikz-cd does it: columns as wide as their
+// widest object, separated by column sep 2.4em and row sep 1.8em plus any spacing
+// adjustments, cells with inner sep 1ex × 0.85ex.
 function tikzLayout(d, style = EXPORT_STYLE) {
   const em = style.font, ex = 0.4306 * em;
+  const gr = d.grid();
   const sizes = new Map();
   for (const n of d.nodes) {
     const m = n.label.trim() ? measureTeX(n.label, style.font) : { w: 0, h: 0 };
     sizes.set(n.id, { w: m.w, h: m.h, hw: m.w / 2 + ex, hh: m.h / 2 + 0.85 * ex });
   }
-  const b = d.bounds() || { c0: 0, c1: 0, r0: 0, r1: 0 };
-  const colW = new Map(), rowH = new Map();
+  const colW = new Array(gr.col.count).fill(2 * ex), rowH = new Array(gr.row.count).fill(1.7 * ex);
   for (const n of d.nodes) {
-    const s = sizes.get(n.id);
-    colW.set(n.col, Math.max(colW.get(n.col) || 2 * ex, 2 * s.hw));
-    rowH.set(n.row, Math.max(rowH.get(n.row) || 1.7 * ex, 2 * s.hh));
+    const s = sizes.get(n.id), c = gr.col.index.get(n.col), r = gr.row.index.get(n.row);
+    colW[c] = Math.max(colW[c], 2 * s.hw);
+    rowH[r] = Math.max(rowH[r], 2 * s.hh);
   }
-  const xs = new Map(), ys = new Map();
-  let x = 0;
-  for (let c = b.c0; c <= b.c1; c++) {
-    const w = colW.get(c) || 2 * ex;
-    xs.set(c, x + w / 2);
-    x += w + 2.4 * em;
-  }
-  let y = 0;
-  for (let r = b.r0; r <= b.r1; r++) {
-    const h = rowH.get(r) || 1.7 * ex;
-    ys.set(r, y + h / 2);
-    y += h + 1.8 * em;
-  }
+  const place = (sizesAlong, sep, adjust) => {
+    const pos = [];
+    let at = 0;
+    sizesAlong.forEach((w, i) => {
+      pos.push(at + w / 2);
+      at += w + (sep + (adjust[i] || 0)) * em;
+    });
+    return pos;
+  };
+  const xs = place(colW, 2.4, gr.col.adjust), ys = place(rowH, 1.8, gr.row.adjust);
   const boxes = new Map();
   for (const n of d.nodes) {
     const s = sizes.get(n.id);
-    boxes.set(n.id, { x: xs.get(n.col), y: ys.get(n.row), hw: s.hw, hh: s.hh, w: s.w, h: s.h });
+    boxes.set(n.id, { x: xs[gr.col.index.get(n.col)], y: ys[gr.row.index.get(n.row)], hw: s.hw, hh: s.hh, w: s.w, h: s.h });
   }
-  return { boxes, cellXY: (c, r) => ({ x: xs.get(c) ?? 0, y: ys.get(r) ?? 0 }) };
+  return { boxes };
 }
 
 // ---------- edge geometry ----------
@@ -4123,7 +4283,7 @@ function pathGeometry(e, A, B, shift, style) {
   if (e.bend && e.kind === 'arrow') {
     const th = G.rad(e.bend);
     const a = G.angleOf(G.sub(pb, pa));
-    const k = 0.3915 * G.dist(pa, pb); // TikZ "bend" with looseness 1
+    const k = 0.3915 * G.dist(pa, pb) * (e.looseness || 1); // TikZ "bend" and "looseness"
     curve = [pa, G.add(pa, G.fromAngle(a - th, k)), G.add(pb, G.fromAngle(a + Math.PI + th, k)), pb];
   } else {
     curve = G.lineAsBezier(pa, pb);
@@ -4538,7 +4698,7 @@ return { get app() { return app; }, get onChange() { return onChange; }, get cha
 __defs['./tikz.js'] = function (__require) {
 // tikz-cd export and import.
 
-const { Diagram, EDGE_DEFAULTS } = __require('./model.js');
+const { Diagram, EDGE_DEFAULTS, GRID_PITCH, snapQ } = __require('./model.js');
 
 // ---------- export ----------
 
@@ -4554,10 +4714,12 @@ function quoteLabel(label) {
 
 function cellLabel(label) {
   const t = label.trim();
-  return t.includes('&') ? `{${t}}` : t;
+  // "[" right after \\ would be read as a row-spacing argument.
+  return t.includes('&') || t.startsWith('[') ? `{${t}}` : t;
 }
 
 const fmt = (n) => String(Math.round(n * 100) / 100);
+const em = (x) => `${Math.round(x * 10) / 10}em`;
 
 function mod360(a) {
   return ((Math.round(a) % 360) + 360) % 360;
@@ -4605,6 +4767,7 @@ function arrowOptions(e, from, to, shift) {
     const side = e.bend > 0 ? 'left' : 'right';
     const a = Math.abs(e.bend);
     opts.push(a === 30 ? `bend ${side}` : `bend ${side}=${a}`);
+    if (e.looseness !== 1) opts.push(`looseness=${fmt(e.looseness)}`);
   }
   if (shift) {
     const side = shift > 0 ? 'left' : 'right';
@@ -4629,48 +4792,45 @@ function toTikzCD(input, { indent = '  ' } = {}) {
   const d = input instanceof Diagram ? input : new Diagram(input);
   if (!d.nodes.length) return '\\begin{tikzcd}\n\\end{tikzcd}';
   const shifts = d.shifts();
+  const gr = d.grid();
+  const at = (n) => ({ col: gr.col.index.get(n.col), row: gr.row.index.get(n.row) });
   const byId = new Map(d.nodes.map((n) => [n.id, n]));
 
-  // Cells that must exist: every object plus the targets of corner marks.
-  const need = [];
-  for (const n of d.nodes) need.push({ col: n.col, row: n.row });
-  for (const e of d.edges) {
-    if (e.kind === 'corner') {
-      const t = byId.get(e.to);
-      if (t) need.push({ col: t.col, row: t.row });
-    }
-  }
-  const c0 = Math.min(...need.map((c) => c.col));
-  const r0 = Math.min(...need.map((c) => c.row));
-  const r1 = Math.max(...need.map((c) => c.row));
-
   const content = new Map(); // "row,col" → text
-  const key = (col, row) => `${row},${col}`;
-  for (const n of d.nodes) content.set(key(n.col, n.row), cellLabel(n.label));
+  const key = (p) => `${p.row},${p.col}`;
+  for (const n of d.nodes) content.set(key(at(n)), cellLabel(n.label));
   for (const e of d.edges) {
     const from = byId.get(e.from), to = byId.get(e.to);
     if (!from || !to) continue;
-    const k = key(from.col, from.row);
-    const arrow = `\\arrow[${arrowOptions(e, from, to, shifts.get(e.id) || 0).join(', ')}]`;
+    const k = key(at(from));
+    const arrow = `\\arrow[${arrowOptions(e, at(from), at(to), shifts.get(e.id) || 0).join(', ')}]`;
     const prev = content.get(k) || '';
     content.set(k, prev ? `${prev} ${arrow}` : arrow);
   }
-  // An empty cell that is the end of an arrow needs "{}" so tikz-cd creates its node.
-  for (const c of need) {
-    const k = key(c.col, c.row);
+  // An empty object still needs "{}" so tikz-cd creates its node (arrows may end there).
+  for (const n of d.nodes) {
+    const k = key(at(n));
     if (!content.get(k)) content.set(k, '{}');
   }
 
+  // Column spacing adjustments only count in the first row, so it reaches the last of them.
+  const lastAdjusted = gr.col.adjust.reduce((m, v, i) => (v ? i + 1 : m), 0);
   const lines = [];
-  for (let r = r0; r <= r1; r++) {
-    const cols = need.filter((c) => c.row === r).map((c) => c.col);
-    if (!cols.length) { lines.push(''); continue; }
-    const last = Math.max(...cols);
-    const cells = [];
-    for (let c = c0; c <= last; c++) cells.push(content.get(key(c, r)) || '');
-    lines.push(cells.join(' & ').replace(/^\s+/, '').replace(/\s+&/g, ' &').replace(/^ &/, '&'));
+  for (let r = 0; r < gr.row.count; r++) {
+    let last = Math.max(-1, ...d.nodes.map(at).filter((p) => p.row === r).map((p) => p.col));
+    if (r === 0) last = Math.max(last, lastAdjusted);
+    let line = '';
+    for (let c = 0; c <= last; c++) {
+      if (c > 0) {
+        const adj = r === 0 ? gr.col.adjust[c - 1] : 0;
+        line += adj ? ` &[${em(adj)}] ` : ' & ';
+      }
+      line += content.get(key({ col: c, row: r })) || '';
+    }
+    lines.push(line.replace(/^\s+/, '').replace(/\s+&/g, ' &').replace(/\s+$/, ''));
   }
-  const body = lines.map((l, i) => indent + l + (i < lines.length - 1 ? (l ? ' \\\\' : '\\\\') : '')).join('\n');
+  const rowBreak = (i) => (gr.row.adjust[i] ? `\\\\[${em(gr.row.adjust[i])}]` : '\\\\');
+  const body = lines.map((l, i) => indent + l + (i < lines.length - 1 ? (l ? ' ' : '') + rowBreak(i) : '')).join('\n');
   return `\\begin{tikzcd}\n${body}\n\\end{tikzcd}`;
 }
 
@@ -4763,7 +4923,7 @@ function parseLabelOption(tok) {
 function parseArrow(optsText, oldArgs) {
   const a = {
     dir: '', from: null, to: null, label: '', side: 'left', extra: [], phantom: false,
-    tail: 'none', head: 'to', body: 'solid', double: false, bend: 0, shift: null, loop: null, labels: [],
+    tail: 'none', head: 'to', body: 'solid', double: false, bend: 0, looseness: 1, shift: null, loop: null, labels: [],
   };
   let loopIn = null, loopOut = null;
   for (let tok of splitTop(optsText, ',', { quotes: true })) {
@@ -4791,6 +4951,7 @@ function parseArrow(optsText, oldArgs) {
       case 'draw': if (v === 'none') a.phantom = true; else a.extra.push(tok); break;
       case 'equal': case 'equals': case 'Equal': a.double = true; a.head = 'none'; break;
       case 'bend left': a.bend = v ? parseFloat(v) || 30 : 30; break;
+      case 'looseness': a.looseness = parseFloat(v) || 1; break;
       case 'bend right': a.bend = -(v ? parseFloat(v) || 30 : 30); break;
       case 'shift left': case 'shift right': {
         const n = v === null ? 1 : /^-?[\d.]+$/.test(v) ? parseFloat(v) : NaN;
@@ -4850,9 +5011,11 @@ function parseTikzCD(src) {
   // xymatrix-style \ar is accepted as \arrow.
   const rows = splitTop(body, '\\\\');
   const cells = []; // {col,row,label,arrows}
+  const rowAdjust = [], colAdjust = []; // spacing tweaks in em: \\[Δ] and &[Δ] (first row only, as in TikZ)
   rows.forEach((rowText, r) => {
-    rowText = rowText.replace(/^\s*\[[^\]]*\]/, ''); // \\[2em]
+    rowText = rowText.replace(/^\s*\[([^\]]*)\]/, (_, dim) => { if (r > 0) rowAdjust[r - 1] = toEm(dim); return ''; });
     splitTop(rowText, '&').forEach((cellText, c) => {
+      if (c > 0) cellText = cellText.replace(/^\[([^\]]*)\]/, (_, dim) => { if (r === 0) colAdjust[c - 1] = toEm(dim); return ''; });
       const arrows = [];
       let label = '';
       let i = 0;
@@ -4889,20 +5052,22 @@ function parseTikzCD(src) {
     });
   });
 
-  const d = new Diagram();
-  const nodeAt = (col, row, create) => {
-    let n = d.nodeAt(col, row);
-    if (!n && create) n = d.addNode(col, row, '');
-    return n;
+  // Work in matrix coordinates first, then turn spacing tweaks back into cell positions.
+  const objects = new Map(); // "col,row" → {col,row,label}
+  const object = (col, row) => {
+    const k = `${col},${row}`;
+    if (!objects.has(k)) objects.set(k, { col, row, label: '' });
+    return objects.get(k);
   };
   for (const cell of cells) {
-    if (cell.label) nodeAt(cell.col, cell.row, true).label = cell.label;
-    else if (cell.empty) nodeAt(cell.col, cell.row, true);
+    if (cell.label) object(cell.col, cell.row).label = cell.label;
+    else if (cell.empty) object(cell.col, cell.row);
   }
   const parseRef = (ref) => {
     const m = /^\s*\{?(\d+)\s*-\s*(\d+)\}?\s*$/.exec(ref || '');
     return m ? { row: +m[1] - 1, col: +m[2] - 1 } : null;
   };
+  const arrows = [];
   for (const cell of cells) {
     for (const a of cell.arrows) {
       let src = { col: cell.col, row: cell.row };
@@ -4919,26 +5084,49 @@ function parseTikzCD(src) {
         const count = (ch) => (a.dir.match(new RegExp(ch, 'g')) || []).length;
         dst = { col: src.col + count('r') - count('l'), row: src.row + count('d') - count('u') };
       }
-      const from = nodeAt(src.col, src.row, true);
-      const to = nodeAt(dst.col, dst.row, true);
-      const corner = a.phantom && /\\(lr|ul|ll|ur)corner/.test(a.label);
-      const props = {
-        label: corner ? '' : a.label,
-        side: a.side,
-        head: a.head,
-        tail: a.tail,
-        body: a.body,
-        double: a.double,
-        bend: a.bend,
-        shift: a.shift,
-        loop: a.loop ?? EDGE_DEFAULTS.loop,
-        kind: corner ? 'corner' : a.phantom ? 'phantom' : 'arrow',
-        extra: a.extra,
-      };
-      d.addEdge(from.id, to.id, props);
+      arrows.push({ a, from: object(src.col, src.row), to: object(dst.col, dst.row) });
     }
   }
-  return { diagram: d, warnings };
+  const position = (adjust, pitch) => (i) => {
+    let x = 0;
+    for (let k = 0; k < i; k++) x += adjust[k] ? Math.max(0.25, snapQ(1 + adjust[k] / pitch)) : 1;
+    return i < 0 ? i : x;
+  };
+  const px = position(colAdjust, GRID_PITCH.col), py = position(rowAdjust, GRID_PITCH.row);
+  const nodes = [...objects.values()].map((o, i) => {
+    o.id = `n${i + 1}`;
+    return { id: o.id, col: px(o.col), row: py(o.row), label: o.label };
+  });
+  const edges = arrows.map(({ a, from, to }, i) => {
+    const corner = a.phantom && /\\(lr|ul|ll|ur)corner/.test(a.label);
+    return {
+      id: `e${i + 1}`,
+      from: from.id,
+      to: to.id,
+      label: corner ? '' : a.label,
+      side: a.side,
+      head: a.head,
+      tail: a.tail,
+      body: a.body,
+      double: a.double,
+      bend: a.bend,
+      looseness: a.looseness,
+      shift: a.shift,
+      loop: a.loop ?? EDGE_DEFAULTS.loop,
+      kind: corner ? 'corner' : a.phantom ? 'phantom' : 'arrow',
+      extra: a.extra,
+    };
+  });
+  return { diagram: new Diagram({ nodes, edges }), warnings };
+}
+
+// A TeX dimension in em (10pt text: 1em = 10pt, 1ex ≈ 0.43em).
+function toEm(dim) {
+  const m = /^\s*([+-]?[\d.]+)\s*([a-z]*)\s*$/.exec(dim || '');
+  if (!m) return 0;
+  const v = parseFloat(m[1]);
+  const per = { em: 1, ex: 0.43, pt: 0.1, bp: 0.1004, mm: 0.2845, cm: 2.845, in: 7.227, pc: 1.2 }[m[2] || 'em'];
+  return per ? v * per : 0;
 }
 
 return { get directionLetters() { return directionLetters; }, get quoteLabel() { return quoteLabel; }, get cornerSymbol() { return cornerSymbol; }, get arrowOptions() { return arrowOptions; }, get needsSquiggly() { return needsSquiggly; }, get toTikzCD() { return toTikzCD; }, get splitTop() { return splitTop; }, get parseTikzCD() { return parseTikzCD; } };
@@ -5006,8 +5194,12 @@ __require('./main.js');
           <pattern id="grid-dots" patternUnits="userSpaceOnUse" width="128" height="104" x="-64" y="-52">
             <circle class="grid-dot" cx="64" cy="52" r="1.7"/>
           </pattern>
+          <pattern id="grid-dots-minor" patternUnits="userSpaceOnUse" width="32" height="26" x="-16" y="-13">
+            <circle class="grid-dot-minor" cx="16" cy="13" r="1"/>
+          </pattern>
         </defs>
         <g id="viewport">
+          <rect id="grid-minor" fill="url(#grid-dots-minor)"/>
           <rect id="grid" fill="url(#grid-dots)"/>
           <g id="under"></g>
           <g id="scene"></g>

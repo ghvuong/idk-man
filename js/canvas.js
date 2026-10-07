@@ -6,9 +6,10 @@ import {
 } from './render.js';
 import * as G from './geom.js';
 import { directionLetters } from './tikz.js';
+import { Diagram, MIN_GAP, snapQ } from './model.js';
 
 const NS = 'http://www.w3.org/2000/svg';
-let svg, viewport, grid, under, scene, overlay, stage;
+let svg, viewport, grid, gridMinor, minorPattern, under, scene, overlay, stage;
 let liveInk = null, ghost = null, pendingLayer = null, readingLayer = null, sketchLayer = null, lassoPath = null;
 
 export const geo = { layout: null, geoms: new Map() };
@@ -17,6 +18,8 @@ export function initCanvas() {
   svg = document.getElementById('canvas');
   viewport = document.getElementById('viewport');
   grid = document.getElementById('grid');
+  gridMinor = document.getElementById('grid-minor');
+  minorPattern = document.getElementById('grid-dots-minor');
   under = document.getElementById('under');
   scene = document.getElementById('scene');
   overlay = document.getElementById('overlay');
@@ -62,12 +65,33 @@ export function applyView() {
   viewport.setAttribute('transform', `translate(${v.x} ${v.y}) scale(${v.k})`);
   const r = svg.getBoundingClientRect();
   const x0 = -v.x / v.k, y0 = -v.y / v.k;
-  grid.setAttribute('x', x0 - CELL_W);
-  grid.setAttribute('y', y0 - CELL_H);
-  grid.setAttribute('width', r.width / v.k + 2 * CELL_W);
-  grid.setAttribute('height', r.height / v.k + 2 * CELL_H);
+  for (const g of [grid, gridMinor]) {
+    g.setAttribute('x', x0 - CELL_W);
+    g.setAttribute('y', y0 - CELL_H);
+    g.setAttribute('width', r.width / v.k + 2 * CELL_W);
+    g.setAttribute('height', r.height / v.k + 2 * CELL_H);
+  }
+  // Faint dots at the positions objects snap to when moved (finer when zoomed in).
+  const step = moveStep();
+  gridMinor.style.display = step < 1 ? '' : 'none';
+  if (step < 1) {
+    const w = CELL_W * step, h = CELL_H * step;
+    minorPattern.setAttribute('width', w);
+    minorPattern.setAttribute('height', h);
+    minorPattern.setAttribute('x', -w / 2);
+    minorPattern.setAttribute('y', -h / 2);
+    const dot = minorPattern.firstElementChild;
+    dot.setAttribute('cx', w / 2);
+    dot.setAttribute('cy', h / 2);
+  }
   const z = document.getElementById('zoom-level');
   if (z) z.textContent = `${Math.round(v.k * 100)}%`;
+}
+
+// How far a dragged object jumps, in cells: about 30–60 screen pixels at any zoom.
+export function moveStep() {
+  const k = app.view.k;
+  return k >= 1.25 ? 0.25 : k >= 0.6 ? 0.5 : 1;
 }
 
 export function setView(x, y, k) {
@@ -172,13 +196,31 @@ export function clearGhost() {
 
 // Preview of the arrow being drawn: straight line from the source to the target cell,
 // a dashed circle where a new object will appear, and the tikz-cd direction tag.
+// tikz-cd direction letters an arrow from `from` to the position `to` would get,
+// counted in the matrix the diagram would have with an object at `to`.
+let lettersCache = { key: '', value: '' };
+function previewLetters(from, to) {
+  const key = `${app.diagram.snapshot().length}|${from.id}|${to.col},${to.row}`;
+  if (lettersCache.key === key) return lettersCache.value;
+  const nodes = app.diagram.nodes.map((n) => ({ ...n }));
+  if (!app.diagram.nodeNear(to.col, to.row)) nodes.push({ id: '__ghost', col: to.col, row: to.row, label: '' });
+  const gr = new Diagram({ nodes, edges: [] }).grid();
+  const target = nodes.find((n) => n.col === to.col && n.row === to.row) || app.diagram.nodeNear(to.col, to.row);
+  const value = directionLetters(
+    gr.col.index.get(target.col) - gr.col.index.get(from.col),
+    gr.row.index.get(target.row) - gr.row.index.get(from.row),
+  );
+  lettersCache = { key, value };
+  return value;
+}
+
 export function showGhost(fromNodeId, target, { dashed = false } = {}) {
   ghost.replaceChildren();
   const fromBox = geo.layout.boxes.get(fromNodeId);
   const from = app.diagram.node(fromNodeId);
   if (!fromBox || !from || !target) return;
   const tc = { x: target.col * CELL_W, y: target.row * CELL_H };
-  if (target.col === from.col && target.row === from.row) return;
+  if (Math.abs(target.col - from.col) < MIN_GAP && Math.abs(target.row - from.row) < MIN_GAP) return;
   const tBox = target.nodeId ? geo.layout.boxes.get(target.nodeId) : { x: tc.x, y: tc.y, hw: 10, hh: 10 };
   const curve = G.lineAsBezier({ x: fromBox.x, y: fromBox.y }, { x: tBox.x, y: tBox.y });
   const [t0, t1] = G.clipBezierToBoxes(curve, fromBox, tBox);
@@ -196,7 +238,7 @@ export function showGhost(fromNodeId, target, { dashed = false } = {}) {
   }, ghost);
   if (!target.nodeId) mk('circle', { cx: tc.x, cy: tc.y, r: 12, class: 'ghost-node' }, ghost);
   // Direction letters as tikz-cd would write them.
-  const letters = directionLetters(target.col - from.col, target.row - from.row);
+  const letters = previewLetters(from, target.nodeId ? app.diagram.node(target.nodeId) : target);
   const mid = G.bezierPoint(vis, 0.5);
   const n = G.leftNormal(dir);
   const pos = G.add(mid, G.mul(n, 16));
@@ -210,25 +252,35 @@ export function showGhost(fromNodeId, target, { dashed = false } = {}) {
 export function showCellHint(cell) {
   ghost.replaceChildren();
   if (!cell) return;
+  const s = Number.isInteger(cell.col) && Number.isInteger(cell.row) ? 1 : 0.5;
   mk('rect', {
-    x: cell.col * CELL_W - CELL_W * 0.42, y: cell.row * CELL_H - CELL_H * 0.4,
-    width: CELL_W * 0.84, height: CELL_H * 0.8, rx: 14, class: 'cell-hint',
+    x: cell.col * CELL_W - CELL_W * 0.42 * s, y: cell.row * CELL_H - CELL_H * 0.4 * s,
+    width: CELL_W * 0.84 * s, height: CELL_H * 0.8 * s, rx: 14 * s, class: 'cell-hint',
   }, ghost);
 }
 
 // ---------- hit testing ----------
 
+// Where a new object drawn or tapped at p goes: the nearest whole cell when p is close to
+// one, otherwise the nearest half cell (when zoomed in enough to aim that finely).
 export function cellOf(p) {
+  const step = app.view.k >= 0.6 ? 0.5 : 1;
+  const snap = (v) => (Math.abs(v - Math.round(v)) <= 0.3 ? Math.round(v) : snapQ(Math.round(v / step) * step));
+  return { col: snap(p.x / CELL_W), row: snap(p.y / CELL_H) };
+}
+
+// The whole cell containing p: used to tell whether a stroke stays in one place.
+export function regionOf(p) {
   return { col: Math.round(p.x / CELL_W), row: Math.round(p.y / CELL_H) };
 }
 
 export function nodeAtCell(cell) {
-  return app.diagram.nodeAt(cell.col, cell.row);
+  return app.diagram.nodeNear(cell.col, cell.row);
 }
 
-// The object whose cell contains p (cells are generous targets for fingers and pens).
+// The object nearest to p within half a cell each way (generous targets for fingers and pens).
 export function nodeAtPoint(p) {
-  return nodeAtCell(cellOf(p));
+  return app.diagram.nodeNear(p.x / CELL_W, p.y / CELL_H, 0.5);
 }
 
 // Is p on the object's drawn label (with a little slack)?

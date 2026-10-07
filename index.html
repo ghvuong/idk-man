@@ -86,8 +86,12 @@
           <pattern id="grid-dots" patternUnits="userSpaceOnUse" width="128" height="104" x="-64" y="-52">
             <circle class="grid-dot" cx="64" cy="52" r="1.7"/>
           </pattern>
+          <pattern id="grid-dots-minor" patternUnits="userSpaceOnUse" width="32" height="26" x="-16" y="-13">
+            <circle class="grid-dot-minor" cx="16" cy="13" r="1"/>
+          </pattern>
         </defs>
         <g id="viewport">
+          <rect id="grid-minor" fill="url(#grid-dots-minor)"/>
           <rect id="grid" fill="url(#grid-dots)"/>
           <g id="under"></g>
           <g id="scene"></g>

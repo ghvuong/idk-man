@@ -41,41 +41,39 @@ export function editorLayout(d, style = EDITOR_STYLE) {
   return { boxes, cellXY: (c, r) => ({ x: c * CELL_W, y: r * CELL_H }) };
 }
 
-// Columns as wide as their widest object, separated like tikz-cd's defaults
-// (column sep 2.4em, row sep 1.8em, cell inner sep 1ex × 0.85ex).
+// The tikz-cd matrix (Diagram.grid) laid out like tikz-cd does it: columns as wide as their
+// widest object, separated by column sep 2.4em and row sep 1.8em plus any spacing
+// adjustments, cells with inner sep 1ex × 0.85ex.
 export function tikzLayout(d, style = EXPORT_STYLE) {
   const em = style.font, ex = 0.4306 * em;
+  const gr = d.grid();
   const sizes = new Map();
   for (const n of d.nodes) {
     const m = n.label.trim() ? measureTeX(n.label, style.font) : { w: 0, h: 0 };
     sizes.set(n.id, { w: m.w, h: m.h, hw: m.w / 2 + ex, hh: m.h / 2 + 0.85 * ex });
   }
-  const b = d.bounds() || { c0: 0, c1: 0, r0: 0, r1: 0 };
-  const colW = new Map(), rowH = new Map();
+  const colW = new Array(gr.col.count).fill(2 * ex), rowH = new Array(gr.row.count).fill(1.7 * ex);
   for (const n of d.nodes) {
-    const s = sizes.get(n.id);
-    colW.set(n.col, Math.max(colW.get(n.col) || 2 * ex, 2 * s.hw));
-    rowH.set(n.row, Math.max(rowH.get(n.row) || 1.7 * ex, 2 * s.hh));
+    const s = sizes.get(n.id), c = gr.col.index.get(n.col), r = gr.row.index.get(n.row);
+    colW[c] = Math.max(colW[c], 2 * s.hw);
+    rowH[r] = Math.max(rowH[r], 2 * s.hh);
   }
-  const xs = new Map(), ys = new Map();
-  let x = 0;
-  for (let c = b.c0; c <= b.c1; c++) {
-    const w = colW.get(c) || 2 * ex;
-    xs.set(c, x + w / 2);
-    x += w + 2.4 * em;
-  }
-  let y = 0;
-  for (let r = b.r0; r <= b.r1; r++) {
-    const h = rowH.get(r) || 1.7 * ex;
-    ys.set(r, y + h / 2);
-    y += h + 1.8 * em;
-  }
+  const place = (sizesAlong, sep, adjust) => {
+    const pos = [];
+    let at = 0;
+    sizesAlong.forEach((w, i) => {
+      pos.push(at + w / 2);
+      at += w + (sep + (adjust[i] || 0)) * em;
+    });
+    return pos;
+  };
+  const xs = place(colW, 2.4, gr.col.adjust), ys = place(rowH, 1.8, gr.row.adjust);
   const boxes = new Map();
   for (const n of d.nodes) {
     const s = sizes.get(n.id);
-    boxes.set(n.id, { x: xs.get(n.col), y: ys.get(n.row), hw: s.hw, hh: s.hh, w: s.w, h: s.h });
+    boxes.set(n.id, { x: xs[gr.col.index.get(n.col)], y: ys[gr.row.index.get(n.row)], hw: s.hw, hh: s.hh, w: s.w, h: s.h });
   }
-  return { boxes, cellXY: (c, r) => ({ x: xs.get(c) ?? 0, y: ys.get(r) ?? 0 }) };
+  return { boxes };
 }
 
 // ---------- edge geometry ----------
@@ -100,7 +98,7 @@ function pathGeometry(e, A, B, shift, style) {
   if (e.bend && e.kind === 'arrow') {
     const th = G.rad(e.bend);
     const a = G.angleOf(G.sub(pb, pa));
-    const k = 0.3915 * G.dist(pa, pb); // TikZ "bend" with looseness 1
+    const k = 0.3915 * G.dist(pa, pb) * (e.looseness || 1); // TikZ "bend" and "looseness"
     curve = [pa, G.add(pa, G.fromAngle(a - th, k)), G.add(pb, G.fromAngle(a + Math.PI + th, k)), pb];
   } else {
     curve = G.lineAsBezier(pa, pb);
