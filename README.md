@@ -14,7 +14,13 @@ Ví dụ: vẽ ba nét giữa bốn đối tượng là có ngay sơ đồ của
 \end{tikzcd}
 ```
 
-Ứng dụng là một trang web tĩnh, không cần cài đặt hay build: mở `index.html` qua một máy chủ tĩnh bất kỳ.
+## Dùng trên máy tính
+
+Tải tệp [`dist/phac-so-do.html`](dist/phac-so-do.html) (nút *Download raw file* trên GitHub), rồi bấm đúp để
+mở bằng Chrome, Edge hoặc Firefox. Tệp chứa toàn bộ app, kể cả MathJax, nên chạy được cả khi không có mạng;
+không cần cài đặt hay đăng nhập. Sơ đồ đang vẽ được lưu tự động trong trình duyệt đó.
+
+Bản trên claude.ai có thêm tính năng Claude đọc chữ viết tay và ảnh chụp; bản tệp đơn thì gõ nhãn bằng bàn phím.
 
 ## Cách vẽ
 
@@ -48,6 +54,7 @@ và xuất mã. Mũi tên song song giữa cùng hai đối tượng tự đư�
 
 ```sh
 python3 -m http.server 8000   # rồi mở http://localhost:8000
+npm install && npm run build:single   # tạo lại dist/phac-so-do.html sau khi sửa mã
 ```
 
 Nhãn được dựng bằng MathJax (tải từ cdnjs); khi không có mạng, nhãn hiện ở dạng Unicode gần đúng.
@@ -75,6 +82,7 @@ lỗi với vài nhãn (lỗi của chính xy-pic), nên phần xymatrix bỏ qu
 | `js/formats.js` | Xuất CD (amscd), xymatrix, liên kết quiver |
 | `js/ai.js` | Nhận dạng chữ viết tay và ảnh bằng Claude (khả năng `sample` của artifact claude.ai) |
 | `tools/build-artifact.mjs` | Đóng gói để đăng thành artifact trên claude.ai |
+| `tools/build-single.mjs` | Gói cả app (kèm MathJax) vào một tệp `dist/phac-so-do.html` |
 
 ## Vì sao tự viết
 
@@ -101,5 +109,6 @@ Tap to add objects, draw strokes between them for arrows; curved strokes bend, d
 a hook at the start gives ↪, a bar/chevron at the tail gives ↦/↣, a second chevron at the head gives ↠,
 a ⌟ inside a square adds the pullback corner, and scribbling deletes. When the page runs as a claude.ai
 artifact, handwritten labels, whole free-hand sketches and photos of paper diagrams are read by Claude.
-It is a static site with no build step; run `npm test` for the exporter tests and
+It is a static site with no build step; `dist/phac-so-do.html` is the whole app in one file that opens
+with a double click, offline included. Run `npm test` for the exporter tests and
 `node tests/latex-check.mjs` to compile random diagrams with pdflatex.

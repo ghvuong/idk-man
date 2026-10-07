@@ -14,3 +14,15 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+
+  single-file:
+    # dist/phac-so-do.html is committed for download; it must match the sources.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build:single
+      - run: git diff --exit-code -- dist/

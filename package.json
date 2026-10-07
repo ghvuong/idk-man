@@ -6,7 +6,8 @@
     "test": "node --test \"tests/*.test.js\"",
     "serve": "python3 -m http.server 8000",
     "e2e": "node tests/e2e.mjs",
-    "latex": "node tests/latex-check.mjs"
+    "latex": "node tests/latex-check.mjs",
+    "build:single": "node tools/build-single.mjs"
   },
   "devDependencies": {
     "mathjax": "3.2.2",
