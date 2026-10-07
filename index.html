@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phác sơ đồ tikz-cd</title>
+<meta name="description" content="Vẽ tay sơ đồ giao hoán bằng chuột, bút hoặc ngón tay; nhận ngay mã tikz-cd, CD (KaTeX) và xymatrix.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="css/app.css">
+<script>
+  // MathJax renders labels as self-contained SVG paths (no fonts needed, so exports work).
+  window.MathJax = {
+    tex: { packages: { '[+]': ['ams'] } },
+    svg: { fontCache: 'none' },
+    startup: {
+      typeset: false,
+      pageReady() {
+        window.dispatchEvent(new Event('mathjax-ready'));
+        return Promise.resolve();
+      },
+    },
+  };
+</script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-svg.js"></script>
+<script type="module" src="js/main.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <circle cx="7" cy="7" r="2.2"/><circle cx="25" cy="7" r="2.2"/><circle cx="7" cy="25" r="2.2"/><circle cx="25" cy="25" r="2.2"/>
+          <path d="M10.5 7h11M7 10.5v11M10.5 25h11"/>
+        </g>
+        <path class="accent" d="M25 10.5c.8 3.5-.6 7.8.1 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <path class="accent" d="M22.6 18.6l2.6 3.1 2.2-3.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">Phác sơ đồ</span>
+        <span class="brand-tag" data-i18n="app.tagline">Vẽ tay sơ đồ giao hoán, nhận mã tikz-cd</span>
+      </div>
+    </div>
+    <div class="tools" role="radiogroup" aria-label="Tools">
+      <button class="tool" data-tool="pen" role="radio" aria-checked="true" data-i18n-title="tool.pen.title">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 17l1-4L13.5 3.5a2.1 2.1 0 013 3L7 16l-4 1z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span data-i18n="tool.pen">Bút</span>
+      </button>
+      <button class="tool" data-tool="select" role="radio" aria-checked="false" data-i18n-title="tool.select.title">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3l11 6.5-5 1.2-2.3 4.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span data-i18n="tool.select">Chọn</span>
+      </button>
+      <button class="tool" data-tool="sketch" role="radio" aria-checked="false" data-i18n-title="tool.sketch.title" hidden>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 13c2-4 3.5-6 5-6s-1 6 1 6 3-7 5-7 1 5 4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span data-i18n="tool.sketch">Phác tự do</span>
+        <span class="badge" data-i18n="ai.badge">Claude</span>
+      </button>
+    </div>
+    <div class="actions">
+      <button class="icon-btn" id="btn-undo" data-i18n-title="act.undo">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.5 5L3.5 9l4 4M4 9h7.5a5 5 0 010 10H9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -2)"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-redo" data-i18n-title="act.redo">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12.5 5l4 4-4 4M16 9H8.5a5 5 0 000 10H11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 -2)"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-fit" data-i18n-title="act.fit">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7.5V3h4.5M12.5 3H17v4.5M17 12.5V17h-4.5M7.5 17H3v-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-clear" data-i18n-title="act.clear">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4h4v2M6 6l.8 10h6.4L14 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="text-btn optional" id="btn-example" data-i18n="act.example">Ví dụ</button>
+      <button class="icon-btn" id="btn-help" data-i18n-title="act.help">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 8a2 2 0 113 1.7c-.7.4-1 .9-1 1.6M10 14v.01" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <button class="text-btn" id="btn-lang" data-i18n="act.lang" data-i18n-title="act.lang.title">EN</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="stage" id="stage">
+      <svg id="canvas" class="canvas" tabindex="0" role="application" aria-label="Diagram canvas">
+        <defs>
+          <pattern id="grid-dots" patternUnits="userSpaceOnUse" width="128" height="104" x="-64" y="-52">
+            <circle class="grid-dot" cx="64" cy="52" r="1.7"/>
+          </pattern>
+        </defs>
+        <g id="viewport">
+          <rect id="grid" fill="url(#grid-dots)"/>
+          <g id="under"></g>
+          <g id="scene"></g>
+          <g id="overlay"></g>
+        </g>
+      </svg>
+      <div class="label-editor" id="label-editor" hidden>
+        <input id="label-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <div class="symbols" id="symbols"></div>
+      </div>
+      <div class="sketch-bar" id="sketch-bar" hidden>
+        <button class="primary" id="btn-recognize" data-i18n="act.recognize">Nhận dạng</button>
+        <button id="btn-eraser" aria-pressed="false" data-i18n="act.eraser">Tẩy</button>
+        <button id="btn-clear-ink" data-i18n="act.clearInk">Xóa nét</button>
+      </div>
+      <p class="hint" id="hint"></p>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+      <div class="zoom">
+        <button id="btn-zoom-out" aria-label="Zoom out">−</button>
+        <span id="zoom-level">100%</span>
+        <button id="btn-zoom-in" aria-label="Zoom in">+</button>
+      </div>
+    </section>
+
+    <aside class="panel" id="panel">
+      <section class="inspector" id="inspector" aria-live="polite"></section>
+      <section class="output">
+        <div class="tabs" role="tablist">
+          <button role="tab" id="tab-tikz" data-format="tikz" aria-selected="true">tikz-cd</button>
+          <button role="tab" id="tab-cd" data-format="cd" aria-selected="false">CD</button>
+          <button role="tab" id="tab-xy" data-format="xy" aria-selected="false">xymatrix</button>
+          <button class="btn copy" id="btn-copy" data-i18n="act.copy">Sao chép</button>
+        </div>
+        <pre class="code" id="code" tabindex="0"><code id="code-text"></code></pre>
+        <p class="note" id="code-note"></p>
+        <p class="preview-cap" data-i18n="out.preview">Xem trước (bố cục như LaTeX)</p>
+        <div class="preview" id="preview"></div>
+        <div class="export-row">
+          <a class="btn" id="btn-quiver" target="_blank" rel="noopener" data-i18n="act.quiver">Mở trong quiver</a>
+          <button class="btn" id="btn-svg" data-i18n="act.svg">Lưu SVG</button>
+          <button class="btn" id="btn-png" data-i18n="act.png">Lưu PNG</button>
+        </div>
+        <div class="export-row">
+          <button class="btn" id="btn-import" data-i18n="act.import">Dán mã tikz-cd</button>
+          <button class="btn" id="btn-save-json" data-i18n="act.saveJson">Lưu sơ đồ (.json)</button>
+          <label class="btn file-btn"><span data-i18n="act.openJson">Mở .json</span><input type="file" id="file-json" accept=".json,application/json" hidden></label>
+          <label class="btn file-btn" id="photo-btn" hidden><span data-i18n="act.photo">Từ ảnh chụp</span><input type="file" id="file-photo" accept="image/png,image/jpeg,image/webp,image/gif" hidden></label>
+        </div>
+      </section>
+    </aside>
+  </main>
+</div>
+
+<dialog id="help-dialog" aria-labelledby="help-title">
+  <div class="dialog-body" id="help-body"></div>
+  <div class="dialog-foot"><button class="btn primary" id="help-close" data-i18n="act.close">Đóng</button></div>
+</dialog>
+
+<dialog id="import-dialog" aria-labelledby="import-title">
+  <div class="dialog-body">
+    <h2 id="import-title" data-i18n="import.title">Dán mã tikz-cd</h2>
+    <p data-i18n="import.body"></p>
+    <textarea class="import-text" id="import-text" spellcheck="false" placeholder="\begin{tikzcd} A \arrow[r, &quot;f&quot;] &amp; B \end{tikzcd}"></textarea>
+    <p class="note" id="import-error" hidden></p>
+  </div>
+  <div class="dialog-foot">
+    <button class="btn" id="import-cancel" data-i18n="act.no">Thôi</button>
+    <button class="btn primary" id="import-apply" data-i18n="act.apply">Nhập vào</button>
+  </div>
+</dialog>
+
+<dialog id="confirm-dialog">
+  <div class="dialog-body"><p id="confirm-text"></p></div>
+  <div class="dialog-foot">
+    <button class="btn" id="confirm-no" data-i18n="act.no">Thôi</button>
+    <button class="btn primary" id="confirm-yes" data-i18n="act.yes">Xóa</button>
+  </div>
+</dialog>
+</body>
+</html>
